@@ -16,6 +16,7 @@
 #define DOMINOS_PORT 5557       // TCP Port for Domino's
 #define BUFFER_SIZE 2048        // Buffer size for messages
 #define TOKEN_TIMEOUT 180       // 3 minutes
+#define RESTAURANT_TIMEOUT 180  // 3 minutes
 #define MAX_CLIENTS 5           // Maximum number of clients that can connect
 #define MAX_RESTAURANTS 5       // Maximum number of restaurants that can connect
 
@@ -31,6 +32,8 @@ typedef struct {
     char name[BUFFER_SIZE];     // Restaurant name
     struct sockaddr_in address; // Address structure for restaurant
     char menu[BUFFER_SIZE];     // Restaurant menu
+    time_t last_keep_alive;     // Last keep-alive time for the restaurant
+    int active;                 // Active status of the restaurant
 } restaurant_info_t;
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;  // Mutex for clients array
@@ -42,6 +45,7 @@ restaurant_info_t restaurants[MAX_RESTAURANTS]; // Array to store restaurant inf
 void *handle_client(void *arg);
 void *token_manager(void *arg);
 void *menu_update_manager(void *arg);
+void *active_restaurants_manager(void *arg);
 char *generate_token();
 void send_restaurant_options(client_info_t *client);
 void send_menu_to_client(client_info_t *client, const char *restaurant);
@@ -51,6 +55,8 @@ void *restaurant_tcp_handler_dominos(void *arg);
 
 int main() {
     int mcdonalds_socket;
+    int dominos_socket;
+    int taco_bell_socket;
     int welcome_socket; // Socket for clients to connect
     struct sockaddr_in address; // Address structure for server
     int addrlen = sizeof(address);  // Length of address structure
@@ -81,12 +87,15 @@ int main() {
 
     printf("Server listening for clients on port %d\n", CLIENT_PORT);   // For debug
 
-    pthread_t manager_thread, menu_thread;   // Threads for token manager and menu updater
+    pthread_t manager_thread, menu_thread, active_thread;   // Threads for token manager, menu updater, and active restaurants manager
     pthread_create(&manager_thread, NULL, token_manager, NULL);   // Create token manager thread
     pthread_detach(manager_thread); // Detach token manager thread to run in the background
 
     pthread_create(&menu_thread, NULL, menu_update_manager, NULL);   // Create menu update manager thread
     pthread_detach(menu_thread); // Detach menu update manager thread to run in the background
+
+    pthread_create(&active_thread, NULL, active_restaurants_manager, NULL);   // Create active restaurants manager thread
+    pthread_detach(active_thread); // Detach active restaurants manager thread to run in the background
 
     // Start threads to handle TCP communication with restaurants
     pthread_t tcp_thread_mcdonalds, tcp_thread_dominos;
@@ -154,12 +163,23 @@ void *handle_client(void *arg) {
         // Handle client's restaurant choice
         int choice = atoi(buffer); // Convert client input to integer
 
+        pthread_mutex_lock(&restaurants_mutex);
         switch (choice) {
             case 1:
-                restaurant = "McDonalds";
+                if (restaurants[0].active) {
+                    restaurant = "McDonalds";
+                } else {
+                    send(client->client_socket, "McDonalds is not available. Please try during opening hours.\n", 69, 0);
+                    send_restaurant_options(client); // Resend restaurant options
+                }
                 break;
             case 2:
-                restaurant = "Dominos";
+                if (restaurants[1].active) {
+                    restaurant = "Dominos";
+                } else {
+                    send(client->client_socket, "Dominos is not available. Please try during opening hours.\n", 66, 0);
+                    send_restaurant_options(client); // Resend restaurant options
+                }
                 break;
             case 3:
                 restaurant = "Taco Bell";
@@ -167,8 +187,9 @@ void *handle_client(void *arg) {
             default:
                 printf("Invalid choice from %s.\n", client->token);
                 send_restaurant_options(client); // Resend restaurant options if invalid choice
-                continue;
+                break;
         }
+        pthread_mutex_unlock(&restaurants_mutex);
 
         if (restaurant) {
             send_menu_to_client(client, restaurant);  // Send menu to the client from the database
@@ -217,6 +238,24 @@ void *token_manager(void *arg) {
             }
         }
         pthread_mutex_unlock(&clients_mutex);   // Unlock clients array
+    }
+    return NULL;
+}
+
+// Function to manage restaurant active status
+void *active_restaurants_manager(void *arg) {
+    while (1) { // Loop to check for expired keep-alive signals
+        sleep(1);
+        time_t current_time = time(NULL);   // Get current time
+
+        pthread_mutex_lock(&restaurants_mutex); // Lock restaurants array to prevent from multiple threads accessing it simultaneously
+        for (int i = 0; i < MAX_RESTAURANTS; i++) {  // Loop through restaurants array
+            if (restaurants[i].restaurant_socket != 0 && difftime(current_time, restaurants[i].last_keep_alive) > RESTAURANT_TIMEOUT) {  // Check if keep-alive is expired
+                printf("Keep-alive expired for restaurant: %s\n", restaurants[i].name);   // Print message for expired keep-alive
+                restaurants[i].active = 0;    // Set restaurant as inactive
+            }
+        }
+        pthread_mutex_unlock(&restaurants_mutex);   // Unlock restaurants array
     }
     return NULL;
 }
@@ -338,11 +377,15 @@ void *restaurant_tcp_handler_mcdonalds(void *arg) {
                     strncpy(restaurants[i].name, "McDonalds", BUFFER_SIZE);
                     strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
                     restaurants[i].address = restaurant_addr;
+                    restaurants[i].last_keep_alive = time(NULL);
+                    restaurants[i].active = 1; // Set restaurant as active
                     break;
                 }
-                if(restaurants[i].restaurant_socket == restaurant_socket){
+                if (restaurants[i].restaurant_socket == restaurant_socket) {
                     strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
-                }                
+                    restaurants[i].last_keep_alive = time(NULL);
+                    restaurants[i].active = 1; // Set restaurant as active
+                }
             }
             pthread_mutex_unlock(&restaurants_mutex);
         } else {
@@ -406,11 +449,15 @@ void *restaurant_tcp_handler_dominos(void *arg) {
                     strncpy(restaurants[i].name, "Dominos", BUFFER_SIZE);
                     strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
                     restaurants[i].address = restaurant_addr;
+                    restaurants[i].last_keep_alive = time(NULL);
+                    restaurants[i].active = 1; // Set restaurant as active
                     break;
                 }
-                if(restaurants[i].restaurant_socket == restaurant_socket){
+                if (restaurants[i].restaurant_socket == restaurant_socket) {
                     strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
-                } 
+                    restaurants[i].last_keep_alive = time(NULL);
+                    restaurants[i].active = 1; // Set restaurant as active
+                }
             }
             pthread_mutex_unlock(&restaurants_mutex);
         } else {
