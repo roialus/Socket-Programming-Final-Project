@@ -144,7 +144,7 @@ void *keep_alive(void *arg) {
             close(sock);
             pthread_exit(NULL);
         }
-        printf("KEEP_ALIVE sent\n");    // Print the keep-alive message
+        printf("\nKEEP_ALIVE sent\n");    // Print the keep-alive message
     }
     return NULL;    // Return from the thread
 }
