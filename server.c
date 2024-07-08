@@ -50,6 +50,7 @@ void *restaurant_tcp_handler_mcdonalds(void *arg);
 void *restaurant_tcp_handler_dominos(void *arg);
 
 int main() {
+    int mcdonalds_socket;
     int welcome_socket; // Socket for clients to connect
     struct sockaddr_in address; // Address structure for server
     int addrlen = sizeof(address);  // Length of address structure
@@ -89,7 +90,7 @@ int main() {
 
     // Start threads to handle TCP communication with restaurants
     pthread_t tcp_thread_mcdonalds, tcp_thread_dominos;
-    pthread_create(&tcp_thread_mcdonalds, NULL, restaurant_tcp_handler_mcdonalds, NULL);
+    pthread_create(&tcp_thread_mcdonalds, NULL, restaurant_tcp_handler_mcdonalds, &mcdonalds_socket);
     pthread_create(&tcp_thread_dominos, NULL, restaurant_tcp_handler_dominos, NULL);
     pthread_detach(tcp_thread_mcdonalds);
     pthread_detach(tcp_thread_dominos);
@@ -287,10 +288,10 @@ void send_order_to_restaurant(client_info_t *client, const char *order, const ch
 
 // Function to handle TCP communication with McDonald's
 void *restaurant_tcp_handler_mcdonalds(void *arg) {
-    int tcp_socket;
+    int *tcp_socket = (int *)arg;
     struct sockaddr_in tcp_addr;
 
-    if ((tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    if ((*tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("TCP socket creation failed");
         pthread_exit(NULL);
     }
@@ -299,15 +300,15 @@ void *restaurant_tcp_handler_mcdonalds(void *arg) {
     tcp_addr.sin_addr.s_addr = INADDR_ANY;
     tcp_addr.sin_port = htons(MCDONALDS_PORT);
 
-    if (bind(tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
+    if (bind(*tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
         perror("TCP bind failed");
-        close(tcp_socket);
+        close(*tcp_socket);
         pthread_exit(NULL);
     }
 
-    if (listen(tcp_socket, 3) < 0) {
+    if (listen(*tcp_socket, 3) < 0) {
         perror("TCP listen failed");
-        close(tcp_socket);
+        close(*tcp_socket);
         pthread_exit(NULL);
     }
 
@@ -318,7 +319,7 @@ void *restaurant_tcp_handler_mcdonalds(void *arg) {
         struct sockaddr_in restaurant_addr;
         socklen_t addrlen = sizeof(restaurant_addr);
 
-        if ((restaurant_socket = accept(tcp_socket, (struct sockaddr *)&restaurant_addr, &addrlen)) < 0) {
+        if ((restaurant_socket = accept(*tcp_socket, (struct sockaddr *)&restaurant_addr, &addrlen)) < 0) {
             perror("TCP accept failed");
             continue;
         }
@@ -349,7 +350,7 @@ void *restaurant_tcp_handler_mcdonalds(void *arg) {
         }
     }
 
-    close(tcp_socket);
+    close(*tcp_socket);
     pthread_exit(NULL);
 }
 
@@ -407,6 +408,9 @@ void *restaurant_tcp_handler_dominos(void *arg) {
                     restaurants[i].address = restaurant_addr;
                     break;
                 }
+                if(restaurants[i].restaurant_socket == restaurant_socket){
+                    strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
+                } 
             }
             pthread_mutex_unlock(&restaurants_mutex);
         } else {
