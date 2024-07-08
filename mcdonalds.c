@@ -15,6 +15,7 @@
 
 void *multicast_listener(void *arg);
 void *tcp_communication_handler(void *arg);
+int sent_menu = 0;
 
 int main() {
     pthread_t multicast_thread, tcp_thread;
@@ -77,7 +78,7 @@ void *multicast_listener(void *arg) {
         close(multicast_socket);
         pthread_exit(NULL);
     }
-    char *menu_data = "1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99";
+    char *menu_data = "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99";
     printf("McDonald's restaurant listening on multicast group %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
 
     while (1) { // Loop to keep receiving requests
@@ -92,9 +93,16 @@ void *multicast_listener(void *arg) {
 
         // Process the received data (here, assuming it's a menu request)
         if (strncmp(buffer, "REQUEST_MENU", strlen("REQUEST_MENU")) == 0) { // Check if the received data is a menu request
-            printf("Multicast request received. Preparing to send menu data via TCP...\n"); // Debug print statement
-            // Notify the TCP handler to send the menu data back to the server
-            send(tcp_socket, menu_data, strlen(menu_data), 0);
+            if(sent_menu == 0){
+                sent_menu = 1;
+                printf("Multicast request received. Preparing to send menu data via TCP...\n"); // Debug print statement
+                // Notify the TCP handler to send the menu data back to the server
+                send(tcp_socket, menu_data, strlen(menu_data), 0);
+            }
+            else{
+                printf("Menu Already Sent\n");
+                fflush(stdout);
+            }
         }
     }
 
