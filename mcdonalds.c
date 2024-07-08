@@ -18,9 +18,10 @@ void *tcp_communication_handler(void *arg);
 
 int main() {
     pthread_t multicast_thread, tcp_thread;
-
-    pthread_create(&multicast_thread, NULL, multicast_listener, NULL);
-    pthread_create(&tcp_thread, NULL, tcp_communication_handler, NULL);
+    int tcp_socket;
+    pthread_create(&tcp_thread, NULL, tcp_communication_handler, &tcp_socket);
+    pthread_create(&multicast_thread, NULL, multicast_listener, &tcp_socket);
+    
 
     pthread_join(multicast_thread, NULL);
     pthread_join(tcp_thread, NULL);
@@ -30,6 +31,7 @@ int main() {
 
 // Function to listen to the multicast channel
 void *multicast_listener(void *arg) {
+    int tcp_socket = *(int *)arg;       // tcp socket
     struct sockaddr_in multicast_addr; // Multicast address
     struct ip_mreqn mreq;              // Multicast request structure
     int multicast_socket;              // Multicast socket
@@ -75,7 +77,7 @@ void *multicast_listener(void *arg) {
         close(multicast_socket);
         pthread_exit(NULL);
     }
-
+    char *menu_data = "1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99";
     printf("McDonald's restaurant listening on multicast group %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
 
     while (1) { // Loop to keep receiving requests
@@ -92,9 +94,7 @@ void *multicast_listener(void *arg) {
         if (strncmp(buffer, "REQUEST_MENU", strlen("REQUEST_MENU")) == 0) { // Check if the received data is a menu request
             printf("Multicast request received. Preparing to send menu data via TCP...\n"); // Debug print statement
             // Notify the TCP handler to send the menu data back to the server
-            pthread_t tcp_thread;
-            pthread_create(&tcp_thread, NULL, tcp_communication_handler, NULL);
-            pthread_detach(tcp_thread);
+            send(tcp_socket, menu_data, strlen(menu_data), 0);
         }
     }
 
@@ -104,11 +104,11 @@ void *multicast_listener(void *arg) {
 
 // Function to handle TCP communication with the server
 void *tcp_communication_handler(void *arg) {
-    int tcp_socket;
+    int *tcp_socket = (int *)arg;
     struct sockaddr_in tcp_addr;
     char buffer[BUFFER_SIZE];
 
-    if ((tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    if ((*tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("TCP socket creation failed");
         pthread_exit(NULL);
     }
@@ -117,20 +117,20 @@ void *tcp_communication_handler(void *arg) {
     tcp_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
     tcp_addr.sin_port = htons(MCDONALDS_PORT);
 
-    if (connect(tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
+    if (connect(*tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
         perror("TCP connect failed");
-        close(tcp_socket);
+        close(*tcp_socket);
         pthread_exit(NULL);
     }
 
     // Register the restaurant with the server
     char *menu_data = "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99";   // Restaurant menu data example
-    send(tcp_socket, menu_data, strlen(menu_data), 0);
+    //send(tcp_socket, menu_data, strlen(menu_data), 0);
 
     printf("McDonald's restaurant connected to server via TCP\n");
 
     while (1) {
-        int valread = read(tcp_socket, buffer, BUFFER_SIZE);
+        int valread = read(*tcp_socket, buffer, BUFFER_SIZE);
         if (valread > 0) {
             buffer[valread] = '\0';
             printf("Received from server: %s\n", buffer);
@@ -141,11 +141,11 @@ void *tcp_communication_handler(void *arg) {
                 int estimated_time = rand() % 20 + 10; // Random estimated time between 10 and 30 minutes
                 char response[BUFFER_SIZE];
                 snprintf(response, BUFFER_SIZE, "Your order will be ready in %d minutes.", estimated_time);
-                send(tcp_socket, response, strlen(response), 0);
+                send(*tcp_socket, response, strlen(response), 0);
             }
         }
     }
 
-    close(tcp_socket);
+    close(*tcp_socket);
     pthread_exit(NULL);
 }
