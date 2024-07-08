@@ -15,17 +15,20 @@
 
 void *multicast_listener(void *arg);
 void *tcp_communication_handler(void *arg);
+void *keep_alive_handler(void *arg);
+
 int sent_menu = 0;
 
 int main() {
-    pthread_t multicast_thread, tcp_thread;
+    pthread_t multicast_thread, tcp_thread, keep_alive_thread;
     int tcp_socket;
     pthread_create(&tcp_thread, NULL, tcp_communication_handler, &tcp_socket);
     pthread_create(&multicast_thread, NULL, multicast_listener, &tcp_socket);
+    pthread_create(&keep_alive_thread, NULL, keep_alive_handler, &tcp_socket);
     
-
     pthread_join(multicast_thread, NULL);
     pthread_join(tcp_thread, NULL);
+    pthread_join(keep_alive_thread, NULL);
 
     return 0;
 }
@@ -155,5 +158,19 @@ void *tcp_communication_handler(void *arg) {
     }
 
     close(*tcp_socket);
+    pthread_exit(NULL);
+}
+
+// Function to send keep-alive messages to the server
+void *keep_alive_handler(void *arg) {
+    int *tcp_socket = (int *)arg;
+    while (1) {
+        sleep(60); // Send keep-alive every 60 seconds
+        if (send(*tcp_socket, "KEEP_ALIVE", strlen("KEEP_ALIVE"), 0) < 0) {
+            perror("Failed to send keep-alive");
+        } else {
+            printf("\nKeep-alive sent to server\n");
+        }
+    }
     pthread_exit(NULL);
 }
