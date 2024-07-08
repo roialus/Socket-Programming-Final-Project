@@ -339,6 +339,7 @@ void *restaurant_tcp_handler_mcdonalds(void *arg) {
                     restaurants[i].address = restaurant_addr;
                     break;
                 }
+                strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
             }
             pthread_mutex_unlock(&restaurants_mutex);
         } else {
@@ -442,38 +443,8 @@ void *menu_update_manager(void *arg) {
         }
 
         printf("Server Sent to the multicast group a request menu message %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
-
-        // Wait to receive responses
-        struct sockaddr_in restaurant_addr;
-        socklen_t addr_len = sizeof(restaurant_addr);
-        char buffer[BUFFER_SIZE];
-        while (1) {
-            int bytes_received = recvfrom(multicast_socket, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&restaurant_addr, &addr_len);
-            if (bytes_received < 0) {
-                perror("Multicast recvfrom failed");
-                break;
-            }
-            buffer[bytes_received] = '\0';
-            printf("Received menu update: %s\n", buffer);
-
-            // Extract restaurant name and menu
-            char restaurant_name[BUFFER_SIZE];
-            char menu[BUFFER_SIZE];
-            sscanf(buffer, "%s %[^\n]", restaurant_name, menu);
-
-            // Update the restaurant's menu in the database
-            pthread_mutex_lock(&restaurants_mutex);
-            for (int i = 0; i < MAX_RESTAURANTS; i++) {
-                if (strcmp(restaurants[i].name, restaurant_name) == 0) {
-                    strncpy(restaurants[i].menu, menu, BUFFER_SIZE);
-                    break;
-                }
-            }
-            pthread_mutex_unlock(&restaurants_mutex);
-        }
-
         close(multicast_socket);
-        sleep(30); // Wait 30 seconds before the next update
+        sleep(10); // Wait 30 seconds before the next update
     }
     return NULL;
 }
