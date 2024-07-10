@@ -250,7 +250,7 @@ void *active_restaurants_manager(void *arg) {
 
         pthread_mutex_lock(&restaurants_mutex); // Lock restaurants array to prevent from multiple threads accessing it simultaneously
         for (int i = 0; i < MAX_RESTAURANTS; i++) {  // Loop through restaurants array
-            if (restaurants[i].restaurant_socket != 0 && difftime(current_time, restaurants[i].last_keep_alive) > RESTAURANT_TIMEOUT) {  // Check if keep-alive is expired
+            if (restaurants[i].restaurant_socket != 0 && difftime(current_time, restaurants[i].last_keep_alive) > RESTAURANT_TIMEOUT && restaurants[i].active == 1 ) {  // Check if keep-alive is expired
                 printf("Keep-alive expired for restaurant: %s\n", restaurants[i].name);   // Print message for expired keep-alive
                 restaurants[i].active = 0;    // Set restaurant as inactive
             }
@@ -294,12 +294,14 @@ void send_menu_to_client(client_info_t *client, const char *restaurant) {
 void send_order_to_restaurant(client_info_t *client, const char *order, const char *restaurant) {
     int restaurant_socket = -1;
     char response[BUFFER_SIZE];
+    restaurant_info_t *restaurant_info = NULL;
 
     // Find the restaurant socket based on the name
     pthread_mutex_lock(&restaurants_mutex);
     for (int i = 0; i < MAX_RESTAURANTS; i++) {
         if (strcmp(restaurants[i].name, restaurant) == 0) {
             restaurant_socket = restaurants[i].restaurant_socket;
+            restaurant_info = &restaurants[i];
             break;
         }
     }
@@ -315,15 +317,28 @@ void send_order_to_restaurant(client_info_t *client, const char *order, const ch
     send(restaurant_socket, order, strlen(order), 0);
 
     // Receive the estimated time from the restaurant
-    int valread = read(restaurant_socket, response, BUFFER_SIZE);
-    if (valread > 0) {
+    int valread;
+    while ((valread = read(restaurant_socket, response, BUFFER_SIZE)) > 0) {
         response[valread] = '\0';
+        // Handle keep-alive messages
+        if (strcmp(response, "KEEP_ALIVE") == 0) {
+            pthread_mutex_lock(&restaurants_mutex);
+            restaurant_info->last_keep_alive = time(NULL); // Update last keep-alive time
+            pthread_mutex_unlock(&restaurants_mutex);
+            printf("Keep-alive received from %s\n", restaurant_info->name); // Print message for keep-alive
+            fflush(stdout);
+            continue; // Continue to the next iteration of the loop
+        }
+                
         send(client->client_socket, response, strlen(response), 0);
-    } else {
+    }
+
+    if (valread <= 0) {
         snprintf(response, BUFFER_SIZE, "Failed to get the estimated time from %s.\n", restaurant);
         send(client->client_socket, response, strlen(response), 0);
     }
 }
+
 
 // Function to handle TCP communication with McDonald's
 void *restaurant_tcp_handler_mcdonalds(void *arg) {
@@ -471,35 +486,30 @@ void *restaurant_tcp_handler_dominos(void *arg) {
 
 // Function to periodically update menus from restaurants
 void *menu_update_manager(void *arg) {
+    int multicast_socket;
+    struct sockaddr_in multicast_addr;
+    char request[BUFFER_SIZE];
+
+    if ((multicast_socket = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("Multicast socket creation failed");
+    }
+
+    memset(&multicast_addr, 0, sizeof(multicast_addr));
+    multicast_addr.sin_family = AF_INET;
+    multicast_addr.sin_addr.s_addr = inet_addr(MULTICAST_GROUP);
+    multicast_addr.sin_port = htons(MULTICAST_PORT);
+
+    printf("Server listening on multicast group %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
     while (1) {
-        int multicast_socket;
-        struct sockaddr_in multicast_addr;
-        char request[BUFFER_SIZE];
-
-        if ((multicast_socket = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-            perror("Multicast socket creation failed");
-            continue;
-        }
-
-        memset(&multicast_addr, 0, sizeof(multicast_addr));
-        multicast_addr.sin_family = AF_INET;
-        multicast_addr.sin_addr.s_addr = inet_addr(MULTICAST_GROUP);
-        multicast_addr.sin_port = htons(MULTICAST_PORT);
-
-        printf("Server listening on multicast group %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
-
         sprintf(request, "REQUEST_MENU");
         if (sendto(multicast_socket, request, strlen(request), 0, (struct sockaddr *)&multicast_addr, sizeof(multicast_addr)) < 0) {
             perror("Multicast sendto failed");
             close(multicast_socket);
             continue;
         }
-
         printf("Server Sent to the multicast group a request menu message %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
-
-        // Wait to receive responses
-        close(multicast_socket);
         sleep(30); // Wait 30 seconds before the next update
     }
+    close(multicast_socket);
     return NULL;
 }
