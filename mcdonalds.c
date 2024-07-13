@@ -13,11 +13,43 @@
 #define MCDONALDS_PORT 5556         // Unicast TCP port for communication with server
 #define BUFFER_SIZE 1024            // Buffer size for receiving data
 
+typedef enum {
+    ERROR,
+    MSG_KEEP_ALIVE,
+    MSG_REQUEST_MENU,
+    MSG_MENU,
+    MSG_ORDER,
+    MSG_ESTIMATED_TIME,
+    MSG_RESTAURANT_OPTIONS,
+    REST_UNAVALIABLE
+} message_type_t;
+
+typedef struct {
+    message_type_t type;
+    char data[BUFFER_SIZE];
+} message_t;
+
 void *multicast_listener(void *arg);
 void *tcp_communication_handler(void *arg);
 void *keep_alive_handler(void *arg);
 int sent_menu = 0;
 pthread_mutex_t tcp_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for TCP socket
+
+void send_message(int sock, message_t *msg) {
+    msg->type = htonl(msg->type);
+    if (send(sock, msg, sizeof(*msg), 0) != sizeof(*msg)) {
+        perror("Failed to send the complete message");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void receive_message(int sock, message_t *msg) {
+    if (recv(sock, msg, sizeof(*msg), 0) <= 0) {
+        perror("Failed to receive the message");
+        exit(EXIT_FAILURE);
+    }
+    msg->type = ntohl(msg->type);
+}
 
 int main() {
     pthread_t multicast_thread, tcp_thread, keep_alive_thread;
@@ -40,7 +72,7 @@ void *multicast_listener(void *arg) {
     struct ip_mreqn mreq;              // Multicast request structure
     int multicast_socket;              // Multicast socket
     socklen_t addr_len = sizeof(multicast_addr); // Address length for multicast address
-    char buffer[BUFFER_SIZE];          // Buffer for receiving data
+    message_t msg;
 
     // Create multicast socket
     if ((multicast_socket = socket(AF_INET, SOCK_DGRAM, 0)) < 0) { // Create a socket for sending and receiving datagrams
@@ -81,30 +113,32 @@ void *multicast_listener(void *arg) {
         close(multicast_socket);
         pthread_exit(NULL);
     }
-    char *menu_data = "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99";
+
     printf("McDonald's restaurant listening on multicast group %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
 
     while (1) { // Loop to keep receiving requests
-        memset(buffer, 0, BUFFER_SIZE); // Clear the buffer
-
-        // Receive multicast requests from server
-        int bytes_received = recvfrom(multicast_socket, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&multicast_addr, &addr_len); // Receive data from the server
-        if (bytes_received < 0) { // Check if receive failed
+        int bytes_received = recvfrom(multicast_socket, &msg, sizeof(msg), 0, (struct sockaddr *)&multicast_addr, &addr_len);
+        if (bytes_received < 0) {
             perror("recvfrom failed");
             continue;
         }
 
-        // Process the received data (here, assuming it's a menu request)
-        if (strncmp(buffer, "REQUEST_MENU", strlen("REQUEST_MENU")) == 0) { // Check if the received data is a menu request
-            if(sent_menu==0){
+        // Process the received message
+        printf("%d <--- message type! ",msg.type);
+        fflush(stdout);
+        if (msg.type == MSG_REQUEST_MENU) {
+            if (sent_menu == 0) {
                 sent_menu = 1;
                 printf("Multicast request received. Preparing to send menu data via TCP...\n"); // Debug print statement
-                // Notify the TCP handler to send the menu data back to the server
+
+                // Send menu data back to the server via TCP
+                message_t menu_msg;
+                menu_msg.type = MSG_MENU;
+                strcpy(menu_msg.data, "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99");
                 pthread_mutex_lock(&tcp_mutex);
-                send(tcp_socket, menu_data, strlen(menu_data), 0);
-                pthread_mutex_unlock(&tcp_mutex);                
-            }
-            else{
+                send_message(tcp_socket, &menu_msg);
+                pthread_mutex_unlock(&tcp_mutex);
+            } else {
                 printf("Menu Already Sent\n");
                 fflush(stdout);
             }
@@ -119,7 +153,7 @@ void *multicast_listener(void *arg) {
 void *tcp_communication_handler(void *arg) {
     int *tcp_socket = (int *)arg;
     struct sockaddr_in tcp_addr;
-    char buffer[BUFFER_SIZE];
+    message_t msg;
 
     if ((*tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("TCP socket creation failed");
@@ -137,27 +171,29 @@ void *tcp_communication_handler(void *arg) {
     }
 
     // Register the restaurant with the server
-    char *menu_data = "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99";   // Restaurant menu data example
-    //end(*tcp_socket, menu_data, strlen(menu_data), 0);
+    message_t menu_msg;
+    menu_msg.type = MSG_MENU;
+    strcpy(menu_msg.data, "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99");   // Restaurant menu data example
 
     printf("McDonald's restaurant connected to server via TCP\n");
 
     while (1) {
-        int valread = read(*tcp_socket, buffer, BUFFER_SIZE);
-        if (valread > 0) {
-            buffer[valread] = '\0';
-            printf("Received from server: %s\n", buffer);
+        receive_message(*tcp_socket, &msg);
 
-            // Process order request and respond with estimated time
-            if (strncmp(buffer, "ORDER:", strlen("ORDER:")) == 0) {
+        switch (msg.type) {
+            case MSG_ORDER:
                 srand(time(0));
                 int estimated_time = rand() % 20 + 10; // Random estimated time between 10 and 30 minutes
-                char response[BUFFER_SIZE];
-                snprintf(response, BUFFER_SIZE, "Your order will be ready in %d minutes.", estimated_time);
+                message_t response;
+                response.type = MSG_ESTIMATED_TIME;
+                snprintf(response.data, BUFFER_SIZE, "Your order will be ready in %d minutes.", estimated_time);
                 pthread_mutex_lock(&tcp_mutex);
-                send(*tcp_socket, response, strlen(response), 0);
+                send_message(*tcp_socket, &response);
                 pthread_mutex_unlock(&tcp_mutex);
-            }
+                break;
+            default:
+                printf("Unknown message type received from server: %d\n", msg.type);
+                break;
         }
     }
 
@@ -170,13 +206,13 @@ void *keep_alive_handler(void *arg) {
     int *tcp_socket = (int *)arg;
     while (1) {
         sleep(60); // Send keep-alive every 60 seconds
+        message_t keep_alive_msg;
+        keep_alive_msg.type = MSG_KEEP_ALIVE;
+        strcpy(keep_alive_msg.data, "KEEP_ALIVE");
         pthread_mutex_lock(&tcp_mutex);
-        if (send(*tcp_socket, "KEEP_ALIVE", strlen("KEEP_ALIVE"), 0) < 0) {
-            perror("Failed to send keep-alive");
-        } else {
-            printf("\nKeep-alive sent to server\n");
-        }
+        send_message(*tcp_socket, &keep_alive_msg);
         pthread_mutex_unlock(&tcp_mutex);
+        printf("\nKeep-alive sent to server\n");
     }
     pthread_exit(NULL);
 }
