@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <errno.h>
 
 #define CLIENT_PORT 8080        // Port for clients to connect
 #define MULTICAST_GROUP "239.0.0.1" // Multicast group for restaurants to listen
@@ -19,6 +20,22 @@
 #define RESTAURANT_TIMEOUT 180  // 3 minutes
 #define MAX_CLIENTS 5           // Maximum number of clients that can connect
 #define MAX_RESTAURANTS 5       // Maximum number of restaurants that can connect
+
+typedef enum {
+    ERROR,
+    MSG_KEEP_ALIVE,
+    MSG_REQUEST_MENU,
+    MSG_MENU,
+    MSG_ORDER,
+    MSG_ESTIMATED_TIME,
+    MSG_RESTAURANT_OPTIONS,
+    REST_UNAVALIABLE
+} message_type_t;
+
+typedef struct {
+    message_type_t type;
+    char data[BUFFER_SIZE];
+} message_t;
 
 typedef struct {
     int client_socket;          // Socket for client connection
@@ -52,11 +69,12 @@ void send_menu_to_client(client_info_t *client, const char *restaurant);
 void send_order_to_restaurant(client_info_t *client, const char *order, const char *restaurant);
 void *restaurant_tcp_handler_mcdonalds(void *arg);
 void *restaurant_tcp_handler_dominos(void *arg);
+void send_message(int sock, message_t *msg);
+void receive_message(int sock, message_t *msg);
 
 int main() {
     int mcdonalds_socket;
     int dominos_socket;
-    int taco_bell_socket;
     int welcome_socket; // Socket for clients to connect
     struct sockaddr_in address; // Address structure for server
     int addrlen = sizeof(address);  // Length of address structure
@@ -129,9 +147,6 @@ int main() {
         } else {    // If client slot is available
             pthread_create(&clients[i].thread_id, NULL, handle_client, (void *)&clients[i]);    // Create thread to handle client
             pthread_detach(clients[i].thread_id);   // Detach client handling thread to run in the background
-
-            // Send restaurant options to the client
-            send_restaurant_options(&clients[i]);
         }
     }
 
@@ -139,79 +154,88 @@ int main() {
     return 0;
 }
 
-// Function to handle client connection
 void *handle_client(void *arg) {
     client_info_t *client = (client_info_t *)arg;   // Cast argument to client_info_t pointer
-    char buffer[BUFFER_SIZE];   // Buffer to store messages from client connection
-    int valread;    // Number of bytes read from socket connection
-    const char *restaurant = NULL; // Variable to store restaurant choice
+    message_t msg;
+    memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
 
     printf("Client connected with token: %s\n", client->token);   // Print message when client connects
 
-    // Wait for client to choose a restaurant
-    while ((valread = read(client->client_socket, buffer, BUFFER_SIZE)) > 0) {  // Read message from client
-        buffer[valread] = '\0'; // Null-terminate the message received from client
-        printf("Received from %s: %s\n", client->token, buffer);    // Print message received from client for debug
+    while (1) {
+        // Receive message from client
+        receive_message(client->client_socket, &msg);
+        printf("Server received message type: %d\n", msg.type);
 
-        // Handle keep-alive messages
-        if (strcmp(buffer, "KEEP_ALIVE") == 0) {
-            client->last_keep_alive = time(NULL); // Update last keep-alive time
-            printf("Keep-alive received from %s\n", client->token); // Print message for keep-alive
-            continue;
-        }
+        switch (msg.type) {
+            case MSG_REQUEST_MENU:
+                // Send restaurant options to client
+                printf("Server got a restaurant options request, now showing the client.\n");
+                send_restaurant_options(client);
+                break;
 
-        // Handle client's restaurant choice
-        int choice = atoi(buffer); // Convert client input to integer
+            case MSG_ORDER:
+                // Handle client's restaurant choice
+                printf("Server got client choice\n");
+                int choice = atoi(msg.data);
+                const char *restaurant = NULL;
 
-        pthread_mutex_lock(&restaurants_mutex);
-        switch (choice) {
-            case 1:
-                if (restaurants[0].active) {
-                    restaurant = "McDonalds";
+                switch (choice) {
+                    case 1:
+                        restaurant = "McDonalds";
+                        printf("Server chose McDonalds\n");
+                        break;
+                    case 2:
+                        restaurant = "Dominos";
+                        break;
+                    case 3:
+                        restaurant = "Taco Bell";
+                        break;
+                    default:
+                        printf("Invalid restaurant choice\n");
+                        close(client->client_socket);
+                        pthread_exit(NULL);
+                }
+
+                pthread_mutex_lock(&restaurants_mutex);
+                int found = 0;
+                for (int i = 0; i < MAX_RESTAURANTS; i++) {
+                    if (strcmp(restaurants[i].name, restaurant) == 0 && restaurants[i].active) {
+                        found = 1;
+                        strncpy(msg.data, restaurants[i].menu, BUFFER_SIZE);
+                        msg.type = MSG_MENU;
+                        send_message(client->client_socket, &msg);
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&restaurants_mutex);
+
+                if (!found) {
+                    printf("Restaurant %s is not available\n", restaurant);
+                    message_t A_response;
+                    memset(&A_response, 0, sizeof(message_t)); // Ensure message is zeroed out
+                    A_response.type = REST_UNAVALIABLE;
+                    snprintf(A_response.data, BUFFER_SIZE, "not available");
+                    printf("Sending message type %d\n", A_response.type);
+                    send_message(client->client_socket, &A_response);
                 } else {
-                    send(client->client_socket, "McDonalds is not available. Please try during opening hours.\n", 69, 0);
-                    send_restaurant_options(client); // Resend restaurant options
+                    // Wait for the client to order a meal
+                    receive_message(client->client_socket, &msg);
+                    if (msg.type == MSG_ORDER) {
+                        // Forward the order to the restaurant
+                        send_order_to_restaurant(client, msg.data, restaurant);
+                    } else {
+                        printf("Unexpected message type: %d\n", msg.type);
+                        close(client->client_socket);
+                        pthread_exit(NULL);
+                    }
                 }
                 break;
-            case 2:
-                if (restaurants[1].active) {
-                    restaurant = "Dominos";
-                } else {
-                    send(client->client_socket, "Dominos is not available. Please try during opening hours.\n", 66, 0);
-                    send_restaurant_options(client); // Resend restaurant options
-                }
-                break;
-            case 3:
-                restaurant = "Taco Bell";
-                break;
+
             default:
-                printf("Invalid choice from %s.\n", client->token);
-                send_restaurant_options(client); // Resend restaurant options if invalid choice
-                break;
+                printf("Unexpected message type: %d\n", msg.type);
+                close(client->client_socket);
+                pthread_exit(NULL);
         }
-        pthread_mutex_unlock(&restaurants_mutex);
-
-        if (restaurant) {
-            send_menu_to_client(client, restaurant);  // Send menu to the client from the database
-            break;
-        }
-    }
-
-    // Wait for client to choose a meal
-    while ((valread = read(client->client_socket, buffer, BUFFER_SIZE)) > 0) {  // Read message from client
-        buffer[valread] = '\0'; // Null-terminate the message received from client
-        printf("Received from %s: %s\n", client->token, buffer);    // Print message received from client for debug
-
-        // Handle keep-alive messages
-        if (strcmp(buffer, "KEEP_ALIVE") == 0) {
-            client->last_keep_alive = time(NULL); // Update last keep-alive time
-            printf("\nKeep-alive received from %s\n", client->token); // Print message for keep-alive
-            continue;
-        }
-
-        // Handle meal choice
-        send_order_to_restaurant(client, buffer, restaurant); // Forward the order to the restaurant
-        break;
     }
 
     close(client->client_socket);   // Close client socket after client disconnects
@@ -245,7 +269,7 @@ void *token_manager(void *arg) {
 // Function to manage restaurant active status
 void *active_restaurants_manager(void *arg) {
     while (1) { // Loop to check for expired keep-alive signals
-        sleep(1);
+        sleep(5);
         time_t current_time = time(NULL);   // Get current time
 
         pthread_mutex_lock(&restaurants_mutex); // Lock restaurants array to prevent from multiple threads accessing it simultaneously
@@ -269,31 +293,34 @@ char *generate_token() {
 
 // Function to send restaurant options to client
 void send_restaurant_options(client_info_t *client) {
-    // Send restaurant options to client upon connection
-    char *restaurant_options = "Choose a restaurant:\n1. McDonalds\n2. Dominos\n3. Taco Bell\n";   // Restaurant options message
-    send(client->client_socket, restaurant_options, strlen(restaurant_options), 0);   // Send restaurant options to client
+    message_t msg;
+    memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+    msg.type = MSG_RESTAURANT_OPTIONS;
+    strcpy(msg.data, "Choose a restaurant:\n1. McDonalds\n2. Dominos\n3. Taco Bell\n");
+    send_message(client->client_socket, &msg);
 }
 
 // Function to send menu to client from database
 void send_menu_to_client(client_info_t *client, const char *restaurant) {
-    char response[BUFFER_SIZE] = {0};
+    message_t msg;
+    memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+    msg.type = MSG_MENU;
 
     pthread_mutex_lock(&restaurants_mutex); // Lock restaurants array to prevent from multiple threads accessing it simultaneously
     for (int i = 0; i < MAX_RESTAURANTS; i++) {
         if (strcmp(restaurants[i].name, restaurant) == 0) {
-            strncpy(response, restaurants[i].menu, BUFFER_SIZE);
+            strncpy(msg.data, restaurants[i].menu, BUFFER_SIZE);
             break;
         }
     }
     pthread_mutex_unlock(&restaurants_mutex);   // Unlock restaurants array
 
-    send(client->client_socket, response, strlen(response), 0); // Send the menu to the client
+    send_message(client->client_socket, &msg);
 }
 
 // Function to forward order to restaurant
 void send_order_to_restaurant(client_info_t *client, const char *order, const char *restaurant) {
     int restaurant_socket = -1;
-    char response[BUFFER_SIZE];
     restaurant_info_t *restaurant_info = NULL;
 
     // Find the restaurant socket based on the name
@@ -308,37 +335,30 @@ void send_order_to_restaurant(client_info_t *client, const char *order, const ch
     pthread_mutex_unlock(&restaurants_mutex);
 
     if (restaurant_socket < 0) {
-        snprintf(response, BUFFER_SIZE, "Restaurant %s is not available.\n", restaurant);
-        send(client->client_socket, response, strlen(response), 0);
+        message_t msg;
+        memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+        msg.type = MSG_ESTIMATED_TIME;
+        snprintf(msg.data, BUFFER_SIZE, "Restaurant %s is not available.\n", restaurant);
+        send_message(client->client_socket, &msg);
         return;
     }
 
     // Send the order to the restaurant
-    send(restaurant_socket, order, strlen(order), 0);
+    message_t msg;
+    memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+    msg.type = MSG_ORDER;
+    strncpy(msg.data, order, BUFFER_SIZE);
+    send_message(restaurant_socket, &msg);
 
-    // Receive the estimated time from the restaurant
-    int valread;
-    while ((valread = read(restaurant_socket, response, BUFFER_SIZE)) > 0) {
-        response[valread] = '\0';
-        // Handle keep-alive messages
-        if (strcmp(response, "KEEP_ALIVE") == 0) {
-            pthread_mutex_lock(&restaurants_mutex);
-            restaurant_info->last_keep_alive = time(NULL); // Update last keep-alive time
-            pthread_mutex_unlock(&restaurants_mutex);
-            printf("Keep-alive received from %s\n", restaurant_info->name); // Print message for keep-alive
-            fflush(stdout);
-            continue; // Continue to the next iteration of the loop
-        }
-                
-        send(client->client_socket, response, strlen(response), 0);
-    }
-
-    if (valread <= 0) {
-        snprintf(response, BUFFER_SIZE, "Failed to get the estimated time from %s.\n", restaurant);
-        send(client->client_socket, response, strlen(response), 0);
+    // Receive estimated time from restaurant
+    receive_message(restaurant_socket, &msg);
+    if (msg.type == MSG_ESTIMATED_TIME) {
+        send_message(client->client_socket, &msg);
+    } else {
+        snprintf(msg.data, BUFFER_SIZE, "Failed to get the estimated time from %s.\n", restaurant);
+        send_message(client->client_socket, &msg);
     }
 }
-
 
 // Function to handle TCP communication with McDonald's
 void *restaurant_tcp_handler_mcdonalds(void *arg) {
@@ -377,34 +397,51 @@ void *restaurant_tcp_handler_mcdonalds(void *arg) {
             perror("TCP accept failed");
             continue;
         }
+        printf("McDonald's connected to TCP\n");
 
-        char buffer[BUFFER_SIZE];
-        int valread = read(restaurant_socket, buffer, BUFFER_SIZE);
-        if (valread > 0) {
-            buffer[valread] = '\0';
-            printf("Received from McDonald's: %s\n", buffer);
+        message_t msg;
+        memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+        while (1) {
+            receive_message(restaurant_socket, &msg);
+            printf("Received message type: %d from McDonald's\n", msg.type);
 
-            // Register the restaurant
-            pthread_mutex_lock(&restaurants_mutex);
-            for (int i = 0; i < MAX_RESTAURANTS; i++) {
-                if (restaurants[i].restaurant_socket == 0) {
-                    restaurants[i].restaurant_socket = restaurant_socket;
-                    strncpy(restaurants[i].name, "McDonalds", BUFFER_SIZE);
-                    strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
-                    restaurants[i].address = restaurant_addr;
-                    restaurants[i].last_keep_alive = time(NULL);
-                    restaurants[i].active = 1; // Set restaurant as active
+            switch (msg.type) {
+                case MSG_MENU:
+                    pthread_mutex_lock(&restaurants_mutex);
+                    for (int i = 0; i < MAX_RESTAURANTS; i++) {
+                        if (restaurants[i].restaurant_socket == 0) {
+                            restaurants[i].restaurant_socket = restaurant_socket;
+                            strncpy(restaurants[i].name, "McDonalds", BUFFER_SIZE);
+                            strncpy(restaurants[i].menu, msg.data, BUFFER_SIZE);
+                            restaurants[i].address = restaurant_addr;
+                            restaurants[i].last_keep_alive = time(NULL);
+                            restaurants[i].active = 1; // Set restaurant as active
+                            break;
+                        }
+                        if (restaurants[i].restaurant_socket == restaurant_socket) {
+                            strncpy(restaurants[i].menu, msg.data, BUFFER_SIZE);
+                            restaurants[i].last_keep_alive = time(NULL);
+                            restaurants[i].active = 1; // Set restaurant as active
+                        }
+                    }
+                    pthread_mutex_unlock(&restaurants_mutex);
                     break;
-                }
-                if (restaurants[i].restaurant_socket == restaurant_socket) {
-                    strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
-                    restaurants[i].last_keep_alive = time(NULL);
-                    restaurants[i].active = 1; // Set restaurant as active
-                }
+                case MSG_KEEP_ALIVE:
+                    pthread_mutex_lock(&restaurants_mutex);
+                    for (int i = 0; i < MAX_RESTAURANTS; i++) {
+                        if (restaurants[i].restaurant_socket == restaurant_socket) {
+                            restaurants[i].last_keep_alive = time(NULL);
+                            printf("Keep-alive received from %s\n", restaurants[i].name);
+                            break;
+                        }
+                    }
+                    pthread_mutex_unlock(&restaurants_mutex);
+                    break;
+                default:
+                    printf("Unexpected message type: %d\n", msg.type);
+                    close(restaurant_socket);
+                    break;
             }
-            pthread_mutex_unlock(&restaurants_mutex);
-        } else {
-            close(restaurant_socket);
         }
     }
 
@@ -450,33 +487,49 @@ void *restaurant_tcp_handler_dominos(void *arg) {
             continue;
         }
 
-        char buffer[BUFFER_SIZE];
-        int valread = read(restaurant_socket, buffer, BUFFER_SIZE);
-        if (valread > 0) {
-            buffer[valread] = '\0';
-            printf("Received from Domino's: %s\n", buffer);
+        message_t msg;
+        memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+        while (1) {
+            receive_message(restaurant_socket, &msg);
+            printf("Received message type: %d from Domino's\n", msg.type);
 
-            // Register the restaurant
-            pthread_mutex_lock(&restaurants_mutex);
-            for (int i = 0; i < MAX_RESTAURANTS; i++) {
-                if (restaurants[i].restaurant_socket == 0) {
-                    restaurants[i].restaurant_socket = restaurant_socket;
-                    strncpy(restaurants[i].name, "Dominos", BUFFER_SIZE);
-                    strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
-                    restaurants[i].address = restaurant_addr;
-                    restaurants[i].last_keep_alive = time(NULL);
-                    restaurants[i].active = 1; // Set restaurant as active
+            switch (msg.type) {
+                case MSG_MENU:
+                    pthread_mutex_lock(&restaurants_mutex);
+                    for (int i = 0; i < MAX_RESTAURANTS; i++) {
+                        if (restaurants[i].restaurant_socket == 0) {
+                            restaurants[i].restaurant_socket = restaurant_socket;
+                            strncpy(restaurants[i].name, "Dominos", BUFFER_SIZE);
+                            strncpy(restaurants[i].menu, msg.data, BUFFER_SIZE);
+                            restaurants[i].address = restaurant_addr;
+                            restaurants[i].last_keep_alive = time(NULL);
+                            restaurants[i].active = 1; // Set restaurant as active
+                            break;
+                        }
+                        if (restaurants[i].restaurant_socket == restaurant_socket) {
+                            strncpy(restaurants[i].menu, msg.data, BUFFER_SIZE);
+                            restaurants[i].last_keep_alive = time(NULL);
+                            restaurants[i].active = 1; // Set restaurant as active
+                        }
+                    }
+                    pthread_mutex_unlock(&restaurants_mutex);
                     break;
-                }
-                if (restaurants[i].restaurant_socket == restaurant_socket) {
-                    strncpy(restaurants[i].menu, buffer, BUFFER_SIZE);
-                    restaurants[i].last_keep_alive = time(NULL);
-                    restaurants[i].active = 1; // Set restaurant as active
-                }
+                case MSG_KEEP_ALIVE:
+                    pthread_mutex_lock(&restaurants_mutex);
+                    for (int i = 0; i < MAX_RESTAURANTS; i++) {
+                        if (restaurants[i].restaurant_socket == restaurant_socket) {
+                            restaurants[i].last_keep_alive = time(NULL);
+                            printf("Keep-alive received from %s\n", restaurants[i].name);
+                            break;
+                        }
+                    }
+                    pthread_mutex_unlock(&restaurants_mutex);
+                    break;
+                default:
+                    printf("Unexpected message type: %d\n", msg.type);
+                    close(restaurant_socket);
+                    break;
             }
-            pthread_mutex_unlock(&restaurants_mutex);
-        } else {
-            close(restaurant_socket);
         }
     }
 
@@ -488,10 +541,19 @@ void *restaurant_tcp_handler_dominos(void *arg) {
 void *menu_update_manager(void *arg) {
     int multicast_socket;
     struct sockaddr_in multicast_addr;
-    char request[BUFFER_SIZE];
+    message_t msg;
+    memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
 
     if ((multicast_socket = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         perror("Multicast socket creation failed");
+        pthread_exit(NULL);
+    }
+
+    int reuse = 1;
+    if (setsockopt(multicast_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(reuse)) < 0) {
+        perror("Setting SO_REUSEADDR error");
+        close(multicast_socket);
+        pthread_exit(NULL);
     }
 
     memset(&multicast_addr, 0, sizeof(multicast_addr));
@@ -500,16 +562,47 @@ void *menu_update_manager(void *arg) {
     multicast_addr.sin_port = htons(MULTICAST_PORT);
 
     printf("Server listening on multicast group %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
+
     while (1) {
-        sprintf(request, "REQUEST_MENU");
-        if (sendto(multicast_socket, request, strlen(request), 0, (struct sockaddr *)&multicast_addr, sizeof(multicast_addr)) < 0) {
+        msg.type = MSG_REQUEST_MENU;
+        strcpy(msg.data, "REQUEST_MENU");
+        if (sendto(multicast_socket, &msg, sizeof(msg), 0, (struct sockaddr *)&multicast_addr, sizeof(multicast_addr)) < 0) {
             perror("Multicast sendto failed");
             close(multicast_socket);
             continue;
         }
-        printf("Server Sent to the multicast group a request menu message %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
+        printf("Server sent a request menu message to the multicast group %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
         sleep(30); // Wait 30 seconds before the next update
     }
+
     close(multicast_socket);
     return NULL;
+}
+
+void send_message(int sock, message_t *msg) {
+    message_t network_msg;
+    memset(&network_msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+    network_msg.type = htonl(msg->type); // Convert message type to network byte order
+    strncpy(network_msg.data, msg->data, BUFFER_SIZE); // Copy data without modification
+
+    printf("Sending message type %d (network byte order: %d)\n", msg->type, network_msg.type);
+    if (send(sock, &network_msg, sizeof(network_msg), 0) != sizeof(network_msg)) {
+        perror("Failed to send the complete message");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void receive_message(int sock, message_t *msg) {
+    message_t network_msg;
+    memset(&network_msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+    ssize_t received_bytes = recv(sock, &network_msg, sizeof(network_msg), 0);
+    if (received_bytes <= 0) {
+        perror("Failed to receive the message");
+        exit(EXIT_FAILURE);
+    }
+
+    msg->type = ntohl(network_msg.type); // Convert message type back to host byte order
+    strncpy(msg->data, network_msg.data, BUFFER_SIZE); // Copy data without modification
+
+    printf("Received message type %d (network byte order: %d)\n", msg->type, network_msg.type);
 }
