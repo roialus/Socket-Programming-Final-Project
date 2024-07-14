@@ -122,39 +122,41 @@ char *generate_token() {
     return token;   // Return generated token
 }
 
-void *accpet_clients(void *arg){
-    int welcome_socket = *(int*)arg;
+void *accept_clients(void *arg) {
+    int welcome_socket = *(int *)arg;
     struct sockaddr_in client_address;
-    socklen_t aadr_len = sizeof(client_address);
-    int client_socket;  // Socket for client connection
-    while (1) { // Loop to accept incoming connections
-        if ((client_socket = accept(welcome_socket, (struct sockaddr *)&client_address, (socklen_t *)&aadr_len)) < 0) {  // Accept incoming connection from client
+    socklen_t addr_len = sizeof(client_address);
+    int client_socket;
+
+    while (1) {
+        if ((client_socket = accept(welcome_socket, (struct sockaddr *)&client_address, &addr_len)) < 0) {
             perror("accept failed");
             continue;
         }
 
-        pthread_mutex_lock(&clients_mutex); // Lock clients array to prevent from multiple threads accessing it simultaneously
+        pthread_mutex_lock(&clients_mutex); // Lock clients array to prevent multiple threads from accessing it simultaneously
         int i;  // Loop variable
-        for (i = 0; i < MAX_CLIENTS; i++) { // Loop through clients array to find empty slot
-            if (clients[i].client_socket == 0) {    // Check if client slot is empty
-                clients[i].client_socket = client_socket;   // Assign client socket to client slot
+        for (i = 0; i < MAX_CLIENTS; i++) { // Loop through clients array to find an empty slot
+            if (clients[i].client_socket == 0) { // Check if client slot is empty
+                clients[i].client_socket = client_socket; // Assign client socket to client slot
                 strcpy(clients[i].token, generate_token()); // Generate token for client
-                clients[i].last_keep_alive = time(NULL);    // Set last keep-alive time to current time
+                clients[i].last_keep_alive = time(NULL); // Set last keep-alive time to current time
                 break;
             }
         }
-        pthread_mutex_unlock(&clients_mutex);   // Unlock clients array
+        pthread_mutex_unlock(&clients_mutex); // Unlock clients array
 
         if (i == MAX_CLIENTS) { // Check if maximum client limit is reached
-            printf("Maximum client limit reached. Rejecting new connection.\n");    // Print message if maximum client limit is reached
-            close(client_socket);   // Close client socket if maximum client limit is reached
-        } else {    // If client slot is available
-            pthread_create(&clients[i].thread_id, NULL, handle_client, (void *)&clients[i]);    // Create thread to handle client
-            pthread_detach(clients[i].thread_id);   // Detach client handling thread to run in the background
+            printf("Maximum client limit reached. Rejecting new connection.\n"); // Print message if maximum client limit is reached
+            close(client_socket); // Close client socket if maximum client limit is reached
+        } else { // If a client slot is available
+            pthread_create(&clients[i].thread_id, NULL, handle_client, (void *)&clients[i]); // Create thread to handle client
+            pthread_detach(clients[i].thread_id); // Detach client handling thread to run in the background
         }
     }
     return NULL;
 }
+
 
 // Function to manage restaurant active status
 void *active_restaurants_manager(void *arg) {
