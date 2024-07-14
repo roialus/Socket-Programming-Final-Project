@@ -64,10 +64,10 @@ restaurant_info_t restaurants[MAX_RESTAURANTS]; // Array to store restaurant inf
 void *handle_client(void *arg);
 void *multicast_handler(void *arg);
 void *active_restaurants_manager(void *arg);
-char *generate_token();
+char *generate_token(char *buffer, size_t buffer_size);
 void *token_manager(void *arg);
 void *restaurant_tcp_handler_mcdonalds(void *arg);
-void *accpet_clients(void *arg);
+void *accept_clients(void *arg);
 void *client_manager(void *arg);
 void send_message(int sock, message_t *msg);
 void receive_message(int sock, message_t *msg);
@@ -75,13 +75,12 @@ void send_order_to_restaurant(client_info_t *client, const char *order, const ch
 void send_menu_to_client(client_info_t *client, const char *restaurant);
 void send_restaurant_options(client_info_t *client);
 
-
 void send_message(int sock, message_t *msg) {
     message_t network_msg;
     memset(&network_msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+    network_msg.type = msg->type;
     strncpy(network_msg.data, msg->data, BUFFER_SIZE); // Copy data without modification
-    network_msg.data[sizeof(msg->data)-1] = '\0';
-    send(sock,&network_msg,sizeof(msg),0);
+    send(sock, &network_msg, sizeof(network_msg), 0);
 }
 
 void receive_message(int sock, message_t *msg) {
@@ -92,8 +91,8 @@ void receive_message(int sock, message_t *msg) {
         perror("Failed to receive the message");
         exit(EXIT_FAILURE);
     }
+    msg->type = network_msg.type;
     strncpy(msg->data, network_msg.data, BUFFER_SIZE); // Copy data without modification
-
     printf("Received message type %d\n", msg->type);
 }
 
@@ -103,7 +102,7 @@ void *client_manager(void *arg) {
         sleep(1);
         time_t current_time = time(NULL);   // Get current time
 
-        pthread_mutex_lock(&clients_mutex); // Lock clients array to prevent from multiple threads accessing it simultaneously
+        pthread_mutex_lock(&clients_mutex); // Lock clients array to prevent multiple threads from accessing it simultaneously
         for (int i = 0; i < MAX_CLIENTS; i++) {  // Loop through clients array
             if (clients[i].client_socket != 0 && difftime(current_time, clients[i].last_keep_alive) > TOKEN_TIMEOUT) {  // Check if token is expired
                 printf("Token expired for client: %s\n", clients[i].token);   // Print message for expired token
@@ -116,10 +115,9 @@ void *client_manager(void *arg) {
     return NULL;
 }
 
-char *generate_token() {
-    static char token[BUFFER_SIZE]; // Static buffer to store token
-    sprintf(token, "USER_%ld", time(NULL) + rand() % 10000);    // Generate token based on current time and random number
-    return token;   // Return generated token
+char *generate_token(char *buffer, size_t buffer_size) {
+    snprintf(buffer, buffer_size, "USER_%ld", time(NULL) + rand() % 10000);    // Generate token based on current time and random number
+    return buffer;   // Return generated token
 }
 
 void *accept_clients(void *arg) {
@@ -139,7 +137,7 @@ void *accept_clients(void *arg) {
         for (i = 0; i < MAX_CLIENTS; i++) { // Loop through clients array to find an empty slot
             if (clients[i].client_socket == 0) { // Check if client slot is empty
                 clients[i].client_socket = client_socket; // Assign client socket to client slot
-                strcpy(clients[i].token, generate_token()); // Generate token for client
+                generate_token(clients[i].token, BUFFER_SIZE); // Generate token for client
                 clients[i].last_keep_alive = time(NULL); // Set last keep-alive time to current time
                 break;
             }
@@ -157,14 +155,13 @@ void *accept_clients(void *arg) {
     return NULL;
 }
 
-
 // Function to manage restaurant active status
 void *active_restaurants_manager(void *arg) {
     while (1) { // Loop to check for expired keep-alive signals
         sleep(5);
         time_t current_time = time(NULL);   // Get current time
 
-        pthread_mutex_lock(&restaurants_mutex); // Lock restaurants array to prevent from multiple threads accessing it simultaneously
+        pthread_mutex_lock(&restaurants_mutex); // Lock restaurants array to prevent multiple threads from accessing it simultaneously
         for (int i = 0; i < MAX_RESTAURANTS; i++) {  // Loop through restaurants array
             if (restaurants[i].restaurant_socket != 0 && difftime(current_time, restaurants[i].last_keep_alive) > RESTAURANT_TIMEOUT && restaurants[i].active == 1 ) {  // Check if keep-alive is expired
                 printf("Keep-alive expired for restaurant: %s\n", restaurants[i].name);   // Print message for expired keep-alive
@@ -189,7 +186,7 @@ void send_menu_to_client(client_info_t *client, const char *restaurant) {
     memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
     msg.type = MSG_MENU;
 
-    pthread_mutex_lock(&restaurants_mutex); // Lock restaurants array to prevent from multiple threads accessing it simultaneously
+    pthread_mutex_lock(&restaurants_mutex); // Lock restaurants array to prevent multiple threads from accessing it simultaneously
     for (int i = 0; i < MAX_RESTAURANTS; i++) {
         if (strcmp(restaurants[i].name, restaurant) == 0) {
             strncpy(msg.data, restaurants[i].menu, BUFFER_SIZE);
@@ -287,12 +284,13 @@ void *handle_client(void *arg){
     }
 
     close(client->client_socket);   // Close client socket after client disconnects
-    pthread_mutex_lock(&clients_mutex); // Lock clients array to prevent from multiple threads accessing it simultaneously
+    pthread_mutex_lock(&clients_mutex); // Lock clients array to prevent multiple threads from accessing it simultaneously
     memset(client, 0, sizeof(client_info_t));   // Clear client information after client disconnects
     pthread_mutex_unlock(&clients_mutex);   // Unlock clients array
 
     return NULL;    // Return NULL to exit thread
 }
+
 void send_order_to_restaurant(client_info_t *client, const char *order, const char *restaurant) {
     int restaurant_socket = -1;
     restaurant_info_t *restaurant_info = NULL;
@@ -333,6 +331,7 @@ void send_order_to_restaurant(client_info_t *client, const char *order, const ch
         send_message(client->client_socket, &msg);
     }
 }
+
 void *restaurant_tcp_handler_mcdonalds(void *arg) {
     int *tcp_socket = (int *)arg;
     struct sockaddr_in tcp_addr;
@@ -462,34 +461,32 @@ void *multicast_handler(void *arg) {
     return NULL;
 }
 
-int main(){
-
+int main() {
     int opt = 1;
     int mcdonalds_socket;
     int welcome_socket; // Socket for clients to connect
     struct sockaddr_in address; // Address structure for server
     int addrlen = sizeof(address);  // Length of address structure
-    pthread_t tid_accpet_clients;
+    pthread_t tid_accept_clients;
     pthread_t manager_thread, menu_thread, active_thread;
     memset(clients, 0, sizeof(clients));    // Initialize clients array to 0
     memset(restaurants, 0, sizeof(restaurants)); // Initialize restaurants array to 0
 
-
-//  %%%%%%%%%%%%%%%%%%%%%%%%% ____Create Welcome Socket____%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
+    // %%%%%%%%%%%%%%%%%%%%%%%%% ____Create Welcome Socket____%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     if ((welcome_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0) {  // Create socket for clients to connect
         perror("socket failed");    // Print error message if socket creation fails
         exit(EXIT_FAILURE);
-    }    
+    }
 
-    if (setsockopt(welcome_socket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,&opt, sizeof(opt))){
+    if (setsockopt(welcome_socket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
         perror("socket option failed");
         close(welcome_socket);
         return -1;
     }
+
     address.sin_family = AF_INET;   // Set address family to IPv4
     address.sin_addr.s_addr = INADDR_ANY;   // Set address to accept connections from any IP
-    address.sin_port = htons(CLIENT_PORT);  // Set port for clients to connect3
+    address.sin_port = htons(CLIENT_PORT);  // Set port for clients to connect
 
     if (bind(welcome_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {   // Bind socket to address
         perror("bind failed");  // Print error message if bind fails
@@ -504,8 +501,26 @@ int main(){
     }
 
     printf("Server listening for clients on port %d\n", CLIENT_PORT);   // For debug
-    pthread_create(&tid_accpet_clients,NULL,accpet_clients,&welcome_socket);
-    pthread_detach(tid_accpet_clients);
-    
+    pthread_create(&tid_accept_clients, NULL, accept_clients, &welcome_socket);
+    pthread_detach(tid_accept_clients);
 
+    // Additional thread creation and handling
+    pthread_create(&manager_thread, NULL, client_manager, NULL);
+    pthread_detach(manager_thread);
+
+    pthread_create(&menu_thread, NULL, multicast_handler, NULL);
+    pthread_detach(menu_thread);
+
+    pthread_create(&active_thread, NULL, active_restaurants_manager, NULL);
+    pthread_detach(active_thread);
+
+    pthread_create(&mcdonalds_socket, NULL, restaurant_tcp_handler_mcdonalds, &mcdonalds_socket);
+    pthread_detach(mcdonalds_socket);
+
+    while (1) {
+        // Main thread can perform other tasks or simply sleep
+        sleep(60);
+    }
+
+    return 0;
 }
