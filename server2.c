@@ -19,6 +19,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <asm-generic/socket.h>
+#include <sys/select.h>
 
 #define CLIENT_PORT 8080        // Port for clients to connect
 #define MULTICAST_GROUP "239.0.0.1" // Multicast group for restaurants to listen
@@ -389,7 +390,7 @@ void* listen_for_restaurant_messages(void* args){
     while(1){
         memset(&msg, 0, sizeof(msg));
         bytes_receive_unicast = recv(sock, &msg, sizeof(msg), 0);
-        printf("Bytes received: %d\n", bytes_receive_unicast);
+        //printf("Bytes received: %d\n", bytes_receive_unicast);
         if (bytes_receive_unicast == 0) { // Closed socket
             close(sock);
             pthread_mutex_lock(&restaurant_mutex);
@@ -466,7 +467,60 @@ void *menu_update_manager(void *arg) {
     return NULL;
 }
 
+void* wait_for_connections(void* arg){
+    SocketInfo* info = (SocketInfo*)arg;
+    int server_fd = info->socket_fd; // Welcome Socket
+    struct sockaddr_in address = info->address;
+    int addrlen = sizeof(address);
+    fd_set read_fds;   // set of socket descriptors we want to read from
+    time_t start_time = time(NULL);
+    int client_socket;
+    int max_fd = server_fd;
 
+
+    while(1) {
+        fd_set tmp_fds = read_fds; // Create a copy of the read_fds
+        // Get the current time
+        time_t current_time = time(NULL);
+
+        // Calculate the elapsed time
+        int elapsed_time = (int)difftime(current_time, start_time);
+        FD_ZERO(&tmp_fds);    // Clear the temporary file descriptor set
+        FD_SET(server_fd, &tmp_fds);    // Add the server socket to the temporary file descriptor set
+        //int ret = select(max_fd + 1, &tmp_fds, NULL, NULL, ); // Blocking until a connection is received or timeout
+        //if (ret < 0 && errno != EINTR) {
+        //    perror("Error in select function");
+        //    break; // ? WHAT ELSE SHOULD HAPPEN
+            // exit(EXIT_FAILURE);
+        //}
+        //if (ret == 0) { // Timeout
+        //    printf("Time frame of %d seconds has expired. No more connections accepted.\n", START_GAME_TIMEOUT);
+        //    sleep(2);
+        //    break;
+        //}
+        if (FD_ISSET(server_fd, &tmp_fds)) {    // Check if the server socket is in the read set
+            client_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen); // Accept the new connection
+            if (client_socket < 0) {    // Check if the connection wasn't successful
+                perror("Error in accept function");
+                exit(EXIT_FAILURE);
+            }
+            printf("New request received, wait for authentication...\n");
+            FD_SET(client_socket, &read_fds); // Add the new client to the read set
+            max_fd = client_socket;
+            client client_info;
+            client_info.client_socket = client_socket;
+            client_info.address = address; // This is the address of the WelcomeSocket
+            client_info.last_keep_alive = time(NULL);
+
+            // Create a new thread to handle the connection
+            //pthread_t thread_id;
+            //pthread_create(&thread_id, NULL, authenticate_client, (void*)&client_info);
+            //pthread_detach(thread_id);
+            FD_CLR(server_fd, &read_fds);
+        }
+    }
+    return NULL;
+}
 
 
 int main() {
@@ -522,10 +576,14 @@ int main() {
     printf("Connect to server with IP: %s and port: %d\n", ip, ntohs(address.sin_port));
     //printf("Server started with authentication code %s\nWaiting for connections...\n", auth_code);
 
+    // Start Connection Phase - Wait For Connections Thread
+    pthread_t wait_for_connections_thread;
     SocketInfo info;    // Socket information structure
     info.socket_fd = server_fd_client;    // Set the socket file descriptor
     info.address = address;    // Set the address structure
     info.addrlen = addrlen;    // Set the address length
+    pthread_create(&wait_for_connections_thread, NULL, wait_for_connections, (void*)&info);
+    pthread_join(wait_for_connections_thread, NULL); // Wait until connection phase is done
 
 
     int multicast_sock;    // Multicast socket
