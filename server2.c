@@ -32,7 +32,7 @@
 #define MAX_RESTAURANTS 5       // Maximum number of restaurants that can connect
 #define KEEP_ALIVE_INTERVAL 5    // Interval for sending keep-alive messages
 #define KEEP_ALIVE_TIMEOUT 15    // Timeout for keep-alive messages
-#define INTERFACE_NAME "eno1"    // Interface name for binding the socket
+#define INTERFACE_NAME "enp0s3"    // Interface name for binding the socket
 
 typedef enum {    // Message types
     ERROR,
