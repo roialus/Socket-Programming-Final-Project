@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
+#include <signal.h>
 
 #define MULTICAST_GROUP "239.0.0.1" // Multicast group address
 #define MULTICAST_PORT 5555         // Multicast port
@@ -13,30 +14,81 @@
 #define DOMINOS_PORT 5557           // Unicast TCP port for communication with server
 #define BUFFER_SIZE 1024            // Buffer size for receiving data
 
+typedef enum {
+    ERROR,
+    MSG_KEEP_ALIVE,
+    MSG_REQUEST_MENU,
+    MSG_MENU,
+    MSG_ORDER,
+    MSG_ESTIMATED_TIME,
+    MSG_RESTAURANT_OPTIONS,
+    REST_UNAVALIABLE,
+    MSG_LEAVE
+} message_type_t;
+
+typedef struct {
+    message_type_t type;
+    char data[BUFFER_SIZE];
+} message_t;
+
 void *multicast_listener(void *arg);
 void *tcp_communication_handler(void *arg);
+void *keep_alive_handler(void *arg);
+void handle_signal(int signal);
+
 int sent_menu = 0;
+int tcp_socket; // Global variable for TCP socket
+pthread_mutex_t tcp_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for TCP socket
+pthread_cond_t tcp_cond = PTHREAD_COND_INITIALIZER; // Condition variable for TCP socket
+int tcp_connected = 0;
 
 int main() {
-    pthread_t multicast_thread, tcp_thread;
-    int tcp_socket;
+    struct sigaction sa;
+    sa.sa_handler = handle_signal;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+
+    pthread_t multicast_thread, tcp_thread, keep_alive_thread;
+    struct sockaddr_in tcp_addr;
+
+    if ((tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("TCP socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    tcp_addr.sin_family = AF_INET;
+    tcp_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+    tcp_addr.sin_port = htons(DOMINOS_PORT);
+
+    if (connect(tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
+        perror("TCP connect failed");
+        close(tcp_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Domino's restaurant connected to server via TCP\n");
+
     pthread_create(&tcp_thread, NULL, tcp_communication_handler, &tcp_socket);
     pthread_create(&multicast_thread, NULL, multicast_listener, &tcp_socket);
-    
-    pthread_join(multicast_thread, NULL);
+    pthread_create(&keep_alive_thread, NULL, keep_alive_handler, &tcp_socket);
+
     pthread_join(tcp_thread, NULL);
+    pthread_join(multicast_thread, NULL);
+    pthread_join(keep_alive_thread, NULL);
+
+    close(tcp_socket);
 
     return 0;
 }
 
-// Function to listen to the multicast channel
 void *multicast_listener(void *arg) {
-    int tcp_socket = *(int *)arg;       // tcp socket
+    int tcp_socket = *(int *)arg;       // TCP socket
     struct sockaddr_in multicast_addr; // Multicast address
     struct ip_mreqn mreq;              // Multicast request structure
     int multicast_socket;              // Multicast socket
     socklen_t addr_len = sizeof(multicast_addr); // Address length for multicast address
-    char buffer[BUFFER_SIZE];          // Buffer for receiving data
+    message_t msg;
 
     // Create multicast socket
     if ((multicast_socket = socket(AF_INET, SOCK_DGRAM, 0)) < 0) { // Create a socket for sending and receiving datagrams
@@ -77,29 +129,40 @@ void *multicast_listener(void *arg) {
         close(multicast_socket);
         pthread_exit(NULL);
     }
-    char *menu_data = "Dominos 1. Pepperoni Pizza - $12.99\n2. Margherita Pizza - $10.99\n3. BBQ Chicken Pizza - $13.99\n4. Veggie Pizza - $11.99\n5. Meat Lovers Pizza - $14.99\n6. Hawaiian Pizza - $12.99\n7. Buffalo Chicken Pizza - $13.99\n8. Cheese Pizza - $9.99\n9. Supreme Pizza - $14.99\n10. Bacon Cheeseburger Pizza - $13.99";
+
     printf("Domino's restaurant listening on multicast group %s:%d\n", MULTICAST_GROUP, MULTICAST_PORT); // Print the multicast group information
 
     while (1) { // Loop to keep receiving requests
-        memset(buffer, 0, BUFFER_SIZE); // Clear the buffer
-
-        // Receive multicast requests from server
-        int bytes_received = recvfrom(multicast_socket, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&multicast_addr, &addr_len); // Receive data from the server
-        if (bytes_received < 0) { // Check if receive failed
+        int bytes_received = recvfrom(multicast_socket, &msg, sizeof(msg), 0, (struct sockaddr *)&multicast_addr, &addr_len);
+        if (bytes_received < 0) {
             perror("recvfrom failed");
             continue;
         }
 
-        // Process the received data (here, assuming it's a menu request)
-        if (strncmp(buffer, "REQUEST_MENU", strlen("REQUEST_MENU")) == 0) { // Check if the received data is a menu request
-            if(sent_menu == 0){
+        // Process the received message
+        printf("%d <--- message type!\n ", msg.type);
+        fflush(stdout);
+        if (msg.type == MSG_REQUEST_MENU) {
+            if (sent_menu == 0) {
                 sent_menu = 1;
                 printf("Multicast request received. Preparing to send menu data via TCP...\n"); // Debug print statement
-                // Notify the TCP handler to send the menu data back to the server
-                send(tcp_socket, menu_data, strlen(menu_data), 0);
-            }
-            else{
+
+                // Send menu data back to the server via TCP
+                message_t menu_msg;
+                menu_msg.type = MSG_MENU;
+                strcpy(menu_msg.data, "Dominos 1. Pepperoni Pizza - $8.99\n2. Cheese Pizza - $7.99\n3. BBQ Chicken Pizza - $9.99\n4. Veggie Pizza - $8.49\n5. Meat Lovers Pizza - $10.99\n6. Hawaiian Pizza - $9.49\n7. Supreme Pizza - $10.49\n8. Buffalo Chicken Pizza - $9.99\n9. Philly Cheese Steak Pizza - $10.99\n10. Deluxe Pizza - $9.99");
+                pthread_mutex_lock(&tcp_mutex);
+                printf("now sending on tcp\n");
+                ssize_t bytes_sent = send(tcp_socket, &menu_msg, sizeof(message_t), 0);
+                if (bytes_sent <= 0) {
+                    perror("send");
+                    pthread_mutex_unlock(&tcp_mutex);
+                    continue;
+                }
+                pthread_mutex_unlock(&tcp_mutex);
+            } else {
                 printf("Menu Already Sent\n");
+                fflush(stdout);
             }
         }
     }
@@ -108,50 +171,98 @@ void *multicast_listener(void *arg) {
     pthread_exit(NULL);
 }
 
-// Function to handle TCP communication with the server
 void *tcp_communication_handler(void *arg) {
-    int *tcp_socket = (int *)arg;
-    struct sockaddr_in tcp_addr;
-    char buffer[BUFFER_SIZE];
-
-    if ((*tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("TCP socket creation failed");
-        pthread_exit(NULL);
-    }
-
-    tcp_addr.sin_family = AF_INET;
-    tcp_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
-    tcp_addr.sin_port = htons(DOMINOS_PORT);
-
-    if (connect(*tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
-        perror("TCP connect failed");
-        close(*tcp_socket);
-        pthread_exit(NULL);
-    }
+    int tcp_socket = *(int *)arg;
+    message_t msg;
 
     // Register the restaurant with the server
-    char *menu_data = "Dominos 1. Pepperoni Pizza - $12.99\n2. Margherita Pizza - $10.99\n3. BBQ Chicken Pizza - $13.99\n4. Veggie Pizza - $11.99\n5. Meat Lovers Pizza - $14.99\n6. Hawaiian Pizza - $12.99\n7. Buffalo Chicken Pizza - $13.99\n8. Cheese Pizza - $9.99\n9. Supreme Pizza - $14.99\n10. Bacon Cheeseburger Pizza - $13.99";   // Restaurant menu data example
-    //send(tcp_socket, menu_data, strlen(menu_data), 0);
+    message_t menu_msg;
+    menu_msg.type = MSG_MENU;
+    strcpy(menu_msg.data, "Dominos 1. Pepperoni Pizza - $8.99\n2. Cheese Pizza - $7.99\n3. BBQ Chicken Pizza - $9.99\n4. Veggie Pizza - $8.49\n5. Meat Lovers Pizza - $10.99\n6. Hawaiian Pizza - $9.49\n7. Supreme Pizza - $10.49\n8. Buffalo Chicken Pizza - $9.99\n9. Philly Cheese Steak Pizza - $10.99\n10. Deluxe Pizza - $9.99");
 
-    printf("Domino's restaurant connected to server via TCP\n");
+    // Send initial menu to server
+    // pthread_mutex_lock(&tcp_mutex);
+    // ssize_t bytes_sent = send(tcp_socket, &menu_msg, sizeof(message_t), 0);
+    // if (bytes_sent <= 0) {
+    //     perror("send");
+    //     pthread_mutex_unlock(&tcp_mutex);
+    //     close(tcp_socket);
+    //     pthread_exit(NULL);
+    // }
+    // pthread_mutex_unlock(&tcp_mutex);
 
     while (1) {
-        int valread = read(*tcp_socket, buffer, BUFFER_SIZE);
-        if (valread > 0) {
-            buffer[valread] = '\0';
-            printf("Received from server: %s\n", buffer);
+        ssize_t bytes_received = recv(tcp_socket, &msg, sizeof(message_t), 0);
+        if (bytes_received <= 0) {
+            perror("recv");
+            close(tcp_socket);
+            pthread_exit(NULL);
+        }
 
-            // Process order request and respond with estimated time
-            if (strncmp(buffer, "ORDER:", strlen("ORDER:")) == 0) {
+        switch (msg.type) {
+            case MSG_ORDER:
+                printf("Domino's got the order, %d\n", msg.type);
                 srand(time(0));
                 int estimated_time = rand() % 20 + 10; // Random estimated time between 10 and 30 minutes
-                char response[BUFFER_SIZE];
-                snprintf(response, BUFFER_SIZE, "Your order will be ready in %d minutes.", estimated_time);
-                send(*tcp_socket, response, strlen(response), 0);
-            }
+                message_t response;
+                response.type = MSG_ESTIMATED_TIME;
+                snprintf(response.data, BUFFER_SIZE, "Your order will be ready in %d minutes.", estimated_time);
+                pthread_mutex_lock(&tcp_mutex);
+                ssize_t bytes_sent = send(tcp_socket, &response, sizeof(message_t), 0);
+                if (bytes_sent <= 0) {
+                    perror("send");
+                    pthread_mutex_unlock(&tcp_mutex);
+                    close(tcp_socket);
+                    pthread_exit(NULL);
+                }
+                pthread_mutex_unlock(&tcp_mutex);
+                break;
+            default:
+                printf("Unknown message type received from server: %d\n", msg.type);
+                break;
         }
     }
 
-    close(*tcp_socket);
+    close(tcp_socket);
     pthread_exit(NULL);
+}
+
+void *keep_alive_handler(void *arg) {
+    int tcp_socket = *(int *)arg;
+    while (1) {
+        sleep(60); // Send keep-alive every 60 seconds
+        message_t keep_alive_msg;
+        keep_alive_msg.type = MSG_KEEP_ALIVE;
+        strcpy(keep_alive_msg.data, "KEEP_ALIVE");
+        pthread_mutex_lock(&tcp_mutex);
+        ssize_t bytes_sent = send(tcp_socket, &keep_alive_msg, sizeof(message_t), 0);
+        if (bytes_sent <= 0) {
+            perror("send");
+            pthread_mutex_unlock(&tcp_mutex);
+            close(tcp_socket);
+            pthread_exit(NULL);
+        }
+        pthread_mutex_unlock(&tcp_mutex);
+        printf("\nKeep-alive sent to server\n");
+    }
+    pthread_exit(NULL);
+}
+
+void handle_signal(int signal) {
+    if (signal == SIGINT) {
+        message_t leave_msg;
+        leave_msg.type = MSG_LEAVE;
+        strcpy(leave_msg.data, "LEAVE");
+
+        pthread_mutex_lock(&tcp_mutex);
+        ssize_t bytes_sent = send(tcp_socket, &leave_msg, sizeof(message_t), 0);
+        if (bytes_sent <= 0) {
+            perror("send");
+        }
+        pthread_mutex_unlock(&tcp_mutex);
+
+        close(tcp_socket);
+        printf("Disconnected from server\n");
+        exit(0);
+    }
 }
