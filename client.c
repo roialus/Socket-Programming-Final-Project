@@ -20,6 +20,7 @@ typedef enum {
     MSG_ESTIMATED_TIME,
     MSG_RESTAURANT_OPTIONS,
     REST_UNAVALIABLE,
+    MSG_LEAVE
 } message_type_t;
 
 typedef struct {
@@ -29,33 +30,6 @@ typedef struct {
 
 void *server_communication(void *arg);
 void *keep_alive(void *arg);
-
-void send_message(int sock, message_t *msg) {
-    message_t network_msg;
-    memset(&network_msg, 0, sizeof(message_t));  // Ensure message is zeroed out
-    network_msg.type = htonl(msg->type); // Convert message type to network byte order
-    strncpy(network_msg.data, msg->data, BUFFER_SIZE); // Copy data without modification
-
-    printf("Sending message type %d (network byte order: %d)\n", msg->type, network_msg.type);
-    if (send(sock, &network_msg, sizeof(network_msg), 0) != sizeof(network_msg)) {
-        perror("Failed to send the complete message");
-        exit(EXIT_FAILURE);
-    }
-}
-
-void receive_message(int sock, message_t *msg) {
-    message_t network_msg;
-    memset(&network_msg, 0, sizeof(message_t));  // Ensure message is zeroed out
-    if (recv(sock, &network_msg, sizeof(network_msg), 0) <= 0) {
-        perror("Failed to receive the message");
-        exit(EXIT_FAILURE);
-    }
-
-    msg->type = ntohl(network_msg.type); // Convert message type back to host byte order
-    strncpy(msg->data, network_msg.data, BUFFER_SIZE); // Copy data without modification
-
-    printf("Received message type %d (network byte order: %d)\n", msg->type, network_msg.type);
-}
 
 int main() {
     struct sockaddr_in server_addr; // Server address
@@ -114,12 +88,23 @@ void *server_communication(void *arg) {
         msg.type = MSG_REQUEST_MENU;
         strcpy(msg.data, "REQUEST_MENU");
         printf("Client requesting available restaurants\n");
-        send_message(sock, &msg);
-        // Receive restaurant options from server
-        receive_message(sock, &msg);
-        if(msg.type == 0){
-            receive_message(sock,&msg);
+        ssize_t bytes_sent = send(sock, &msg, sizeof(message_t), 0);
+        if (bytes_sent <= 0) {
+            perror("send");
+            close(sock);
+            pthread_exit(NULL);
         }
+
+        // Receive restaurant options from server
+        do {
+            ssize_t bytes_received = recv(sock, &msg, sizeof(message_t), 0);
+            if (bytes_received <= 0) {
+                perror("recv");
+                close(sock);
+                pthread_exit(NULL);
+            }
+        } while (msg.type == 0);
+
         printf("Client received message type %d\n", msg.type);
 
         if (msg.type == MSG_RESTAURANT_OPTIONS) {
@@ -132,21 +117,30 @@ void *server_communication(void *arg) {
             if (scanf("%d", &choice) != 1 || choice < 1 || choice > 3) { // Read the user choice
                 printf("Invalid choice.\n");
                 close(sock);
-                exit(EXIT_FAILURE);
+                pthread_exit(NULL);
             }
 
             msg.type = MSG_ORDER;
             sprintf(msg.data, "%d", choice);
-            send_message(sock, &msg);
+            bytes_sent = send(sock, &msg, sizeof(message_t), 0);
+            if (bytes_sent <= 0) {
+                perror("send");
+                close(sock);
+                pthread_exit(NULL);
+            }
 
             // Receive response from server
-            receive_message(sock, &msg);
-            if(msg.type == 0){
-                receive_message(sock, &msg);
-            }
-            printf("Client received message type ->> %d\n", msg.type);
-            // receive_message(sock, &msg);
-            // printf("Client received message type ->> %d\n", msg.type);
+            do {
+                ssize_t bytes_received = recv(sock, &msg, sizeof(message_t), 0);
+                if (bytes_received <= 0) {
+                    perror("recv");
+                    close(sock);
+                    pthread_exit(NULL);
+                }
+            } while (msg.type == 0);
+
+            printf("Client received message type %d\n", msg.type);
+
             if (msg.type == REST_UNAVALIABLE) {
                 printf("%s", msg.data);
                 continue;
@@ -160,33 +154,43 @@ void *server_communication(void *arg) {
                 if (scanf("%d", &meal_choice) != 1 || meal_choice < 1 || meal_choice > 10) { // Read the user choice
                     printf("Invalid choice.\n");
                     close(sock);
-                    exit(EXIT_FAILURE);
+                    pthread_exit(NULL);
                 }
 
                 msg.type = MSG_ORDER;
                 sprintf(msg.data, "ORDER: %d", meal_choice);
-                send_message(sock, &msg);
+                bytes_sent = send(sock, &msg, sizeof(message_t), 0);
+                if (bytes_sent <= 0) {
+                    perror("send");
+                    close(sock);
+                    pthread_exit(NULL);
+                }
 
                 // Receive time estimation from server
-                receive_message(sock, &msg);
-                if(msg.type == 0){
-                    receive_message(sock, &msg);
-                }
+                do {
+                    ssize_t bytes_received = recv(sock, &msg, sizeof(message_t), 0);
+                    if (bytes_received <= 0) {
+                        perror("recv");
+                        close(sock);
+                        pthread_exit(NULL);
+                    }
+                } while (msg.type == 0);
+
                 if (msg.type != MSG_ESTIMATED_TIME) {
                     perror("Expected estimated time message");
                     close(sock);
-                    exit(EXIT_FAILURE);
+                    pthread_exit(NULL);
                 }
                 printf("Estimated time for your order: %s\n", msg.data); // Print the time estimation
             } else {
                 perror("Unexpected message type");
                 close(sock);
-                exit(EXIT_FAILURE);
+                pthread_exit(NULL);
             }
         } else {
             perror("Expected restaurant options message");
             close(sock);
-            exit(EXIT_FAILURE);
+            pthread_exit(NULL);
         }
         break; // Exit the loop once an order is successfully placed and time estimation is received
     }
@@ -203,7 +207,12 @@ void *keep_alive(void *arg) {
 
     while (1) { // Loop to send keep-alive messages
         sleep(30); // Send keep-alive message every 30 seconds
-        send_message(sock, &keep_alive_msg);
+        ssize_t bytes_sent = send(sock, &keep_alive_msg, sizeof(message_t), 0);
+        if (bytes_sent <= 0) {
+            perror("send");
+            close(sock);
+            pthread_exit(NULL);
+        }
         printf("\nKEEP_ALIVE sent\n"); // Print the keep-alive message
     }
     return NULL; // Return from the thread
