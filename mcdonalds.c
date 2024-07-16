@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
+#include <signal.h>
 
 #define MULTICAST_GROUP "239.0.0.1" // Multicast group address
 #define MULTICAST_PORT 5555         // Multicast port
@@ -21,7 +22,8 @@ typedef enum {
     MSG_ORDER,
     MSG_ESTIMATED_TIME,
     MSG_RESTAURANT_OPTIONS,
-    REST_UNAVALIABLE
+    REST_UNAVALIABLE,
+    MSG_LEAVE
 } message_type_t;
 
 typedef struct {
@@ -32,42 +34,56 @@ typedef struct {
 void *multicast_listener(void *arg);
 void *tcp_communication_handler(void *arg);
 void *keep_alive_handler(void *arg);
+void handle_signal(int signal);
+
 int sent_menu = 0;
+int tcp_socket; // Global variable for TCP socket
 pthread_mutex_t tcp_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for TCP socket
-
-void send_message(int sock, message_t *msg) {
-    msg->type = htonl(msg->type);
-    if (send(sock, msg, sizeof(*msg), 0) != sizeof(*msg)) {
-        perror("Failed to send the complete message");
-        exit(EXIT_FAILURE);
-    }
-}
-
-void receive_message(int sock, message_t *msg) {
-    if (recv(sock, msg, sizeof(*msg), 0) <= 0) {
-        perror("Failed to receive the message");
-        exit(EXIT_FAILURE);
-    }
-    msg->type = ntohl(msg->type);
-}
+pthread_cond_t tcp_cond = PTHREAD_COND_INITIALIZER; // Condition variable for TCP socket
+int tcp_connected = 0;
 
 int main() {
+    struct sigaction sa;
+    sa.sa_handler = handle_signal;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+
     pthread_t multicast_thread, tcp_thread, keep_alive_thread;
-    int tcp_socket;
+    struct sockaddr_in tcp_addr;
+
+    if ((tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("TCP socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    tcp_addr.sin_family = AF_INET;
+    tcp_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+    tcp_addr.sin_port = htons(MCDONALDS_PORT);
+
+    if (connect(tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
+        perror("TCP connect failed");
+        close(tcp_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("McDonald's restaurant connected to server via TCP\n");
+
     pthread_create(&tcp_thread, NULL, tcp_communication_handler, &tcp_socket);
     pthread_create(&multicast_thread, NULL, multicast_listener, &tcp_socket);
     pthread_create(&keep_alive_thread, NULL, keep_alive_handler, &tcp_socket);
-    
-    pthread_join(tcp_thread,NULL);
-    pthread_join(multicast_thread,NULL);
-    pthread_join(keep_alive_thread,NULL);
+
+    pthread_join(tcp_thread, NULL);
+    pthread_join(multicast_thread, NULL);
+    pthread_join(keep_alive_thread, NULL);
+
+    close(tcp_socket);
 
     return 0;
 }
 
-// Function to listen to the multicast channel
 void *multicast_listener(void *arg) {
-    int tcp_socket = *(int *)arg;       // tcp socket
+    int tcp_socket = *(int *)arg;       // TCP socket
     struct sockaddr_in multicast_addr; // Multicast address
     struct ip_mreqn mreq;              // Multicast request structure
     int multicast_socket;              // Multicast socket
@@ -124,7 +140,7 @@ void *multicast_listener(void *arg) {
         }
 
         // Process the received message
-        printf("%d <--- message type!\n ",msg.type);
+        printf("%d <--- message type!\n ", msg.type);
         fflush(stdout);
         if (msg.type == MSG_REQUEST_MENU) {
             if (sent_menu == 0) {
@@ -137,7 +153,12 @@ void *multicast_listener(void *arg) {
                 strcpy(menu_msg.data, "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99");
                 pthread_mutex_lock(&tcp_mutex);
                 printf("now sending on tcp\n");
-                send_message(tcp_socket, &menu_msg);
+                ssize_t bytes_sent = send(tcp_socket, &menu_msg, sizeof(message_t), 0);
+                if (bytes_sent <= 0) {
+                    perror("send");
+                    pthread_mutex_unlock(&tcp_mutex);
+                    continue;
+                }
                 pthread_mutex_unlock(&tcp_mutex);
             } else {
                 printf("Menu Already Sent\n");
@@ -150,49 +171,50 @@ void *multicast_listener(void *arg) {
     pthread_exit(NULL);
 }
 
-// Function to handle TCP communication with the server
 void *tcp_communication_handler(void *arg) {
-    int *tcp_socket = (int *)arg;
-    struct sockaddr_in tcp_addr;
+    int tcp_socket = *(int *)arg;
     message_t msg;
-
-    if ((*tcp_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("TCP socket creation failed");
-        pthread_exit(NULL);
-    }
-
-    tcp_addr.sin_family = AF_INET;
-    tcp_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
-    tcp_addr.sin_port = htons(MCDONALDS_PORT);
-
-    if (connect(*tcp_socket, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
-        perror("TCP connect failed");
-        close(*tcp_socket);
-        pthread_exit(NULL);
-    }
 
     // Register the restaurant with the server
     message_t menu_msg;
     menu_msg.type = MSG_MENU;
-    strcpy(menu_msg.data, "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99");   // Restaurant menu data example
+    strcpy(menu_msg.data, "McDonalds 1. Big Mac Meal - $5.99\n2. Crispy Chicken Meal - $6.99\n3. Filet-O-Fish Meal - $5.49\n4. McChicken Meal - $4.99\n5. Quarter Pounder Meal - $6.49\n6. Chicken Nuggets Meal - $5.99\n7. Double Cheeseburger Meal - $4.99\n8. McDouble Meal - $4.49\n9. McRib Meal - $6.99\n10. Sausage McMuffin Meal - $3.99");
 
-    printf("McDonald's restaurant connected to server via TCP\n");
+    // // Send initial menu to server
+    // pthread_mutex_lock(&tcp_mutex);
+    // ssize_t bytes_sent = send(tcp_socket, &menu_msg, sizeof(message_t), 0);
+    // if (bytes_sent <= 0) {
+    //     perror("send");
+    //     pthread_mutex_unlock(&tcp_mutex);
+    //     close(tcp_socket);
+    //     pthread_exit(NULL);
+    // }
+    // pthread_mutex_unlock(&tcp_mutex);
 
     while (1) {
-        receive_message(*tcp_socket, &msg);
-        if(msg.type == 0){
-            receive_message(*tcp_socket, &msg);
+        ssize_t bytes_received = recv(tcp_socket, &msg, sizeof(message_t), 0);
+        if (bytes_received <= 0) {
+            perror("recv");
+            close(tcp_socket);
+            pthread_exit(NULL);
         }
+
         switch (msg.type) {
             case MSG_ORDER:
-                printf("mcdonalds got the order, %d\n",msg.type);
+                printf("McDonald's got the order, %d\n", msg.type);
                 srand(time(0));
                 int estimated_time = rand() % 20 + 10; // Random estimated time between 10 and 30 minutes
                 message_t response;
                 response.type = MSG_ESTIMATED_TIME;
                 snprintf(response.data, BUFFER_SIZE, "Your order will be ready in %d minutes.", estimated_time);
                 pthread_mutex_lock(&tcp_mutex);
-                send_message(*tcp_socket, &response);
+                ssize_t bytes_sent = send(tcp_socket, &response, sizeof(message_t), 0);
+                if (bytes_sent <= 0) {
+                    perror("send");
+                    pthread_mutex_unlock(&tcp_mutex);
+                    close(tcp_socket);
+                    pthread_exit(NULL);
+                }
                 pthread_mutex_unlock(&tcp_mutex);
                 break;
             default:
@@ -201,22 +223,46 @@ void *tcp_communication_handler(void *arg) {
         }
     }
 
-    close(*tcp_socket);
+    close(tcp_socket);
     pthread_exit(NULL);
 }
 
-// Function to send keep-alive messages to the server
 void *keep_alive_handler(void *arg) {
-    int *tcp_socket = (int *)arg;
+    int tcp_socket = *(int *)arg;
     while (1) {
         sleep(60); // Send keep-alive every 60 seconds
         message_t keep_alive_msg;
         keep_alive_msg.type = MSG_KEEP_ALIVE;
         strcpy(keep_alive_msg.data, "KEEP_ALIVE");
         pthread_mutex_lock(&tcp_mutex);
-        send_message(*tcp_socket, &keep_alive_msg);
+        ssize_t bytes_sent = send(tcp_socket, &keep_alive_msg, sizeof(message_t), 0);
+        if (bytes_sent <= 0) {
+            perror("send");
+            pthread_mutex_unlock(&tcp_mutex);
+            close(tcp_socket);
+            pthread_exit(NULL);
+        }
         pthread_mutex_unlock(&tcp_mutex);
         printf("\nKeep-alive sent to server\n");
     }
     pthread_exit(NULL);
+}
+
+void handle_signal(int signal) {
+    if (signal == SIGINT) {
+        message_t leave_msg;
+        leave_msg.type = MSG_LEAVE;
+        strcpy(leave_msg.data, "LEAVE");
+
+        pthread_mutex_lock(&tcp_mutex);
+        ssize_t bytes_sent = send(tcp_socket, &leave_msg, sizeof(message_t), 0);
+        if (bytes_sent <= 0) {
+            perror("send");
+        }
+        pthread_mutex_unlock(&tcp_mutex);
+
+        close(tcp_socket);
+        printf("Disconnected from server\n");
+        exit(0);
+    }
 }
