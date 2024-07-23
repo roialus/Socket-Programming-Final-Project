@@ -12,7 +12,7 @@
 #define MULTICAST_PORT 5555         // Multicast port
 #define SERVER_IP "127.0.0.1"
 #define TACO_BELL_PORT 5558         // Unicast TCP port for communication with server
-#define BUFFER_SIZE 1024            // Buffer size for receiving data
+#define BUFFER_SIZE 512             // Buffer size for receiving data
 
 typedef enum {
     ERROR,
@@ -23,12 +23,14 @@ typedef enum {
     MSG_ESTIMATED_TIME,
     MSG_RESTAURANT_OPTIONS,
     REST_UNAVALIABLE,
-    MSG_LEAVE
+    MSG_LEAVE,
+    MSG_TOKEN
 } message_type_t;
 
 typedef struct {
     message_type_t type;
     char data[BUFFER_SIZE];
+    char client_token[BUFFER_SIZE];
 } message_t;
 
 void *multicast_listener(void *arg);
@@ -174,22 +176,6 @@ void *multicast_listener(void *arg) {
 void *tcp_communication_handler(void *arg) {
     int tcp_socket = *(int *)arg;
     message_t msg;
-
-    // Register the restaurant with the server
-    message_t menu_msg;
-    menu_msg.type = MSG_MENU;
-    strcpy(menu_msg.data, "Taco Bell 1. Crunchy Taco - $1.99\n2. Burrito Supreme - $4.99\n3. Chicken Quesadilla - $3.99\n4. Nachos BellGrande - $4.49\n5. Chalupa Supreme - $3.29\n6. Beefy 5-Layer Burrito - $2.49\n7. Crunchwrap Supreme - $3.69\n8. Cheesy Gordita Crunch - $3.59\n9. Mexican Pizza - $4.99\n10. Soft Taco - $1.99");
-
-    // Send initial menu to server
-    // pthread_mutex_lock(&tcp_mutex);
-    // ssize_t bytes_sent = send(tcp_socket, &menu_msg, sizeof(message_t), 0);
-    // if (bytes_sent <= 0) {
-    //     perror("send");
-    //     pthread_mutex_unlock(&tcp_mutex);
-    //     close(tcp_socket);
-    //     pthread_exit(NULL);
-    // }
-    // pthread_mutex_unlock(&tcp_mutex);
 
     while (1) {
         ssize_t bytes_received = recv(tcp_socket, &msg, sizeof(message_t), 0);

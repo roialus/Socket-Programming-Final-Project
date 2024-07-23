@@ -12,7 +12,7 @@
 #define MULTICAST_PORT 5555         // Multicast port
 #define SERVER_IP "127.0.0.1"
 #define MCDONALDS_PORT 5556         // Unicast TCP port for communication with server
-#define BUFFER_SIZE 1024            // Buffer size for receiving data
+#define BUFFER_SIZE 512            // Buffer size for receiving data
 
 typedef enum {
     ERROR,
@@ -23,12 +23,14 @@ typedef enum {
     MSG_ESTIMATED_TIME,
     MSG_RESTAURANT_OPTIONS,
     REST_UNAVALIABLE,
-    MSG_LEAVE
+    MSG_LEAVE,
+    MSG_TOKEN
 } message_type_t;
 
 typedef struct {
     message_type_t type;
     char data[BUFFER_SIZE];
+    char client_token[BUFFER_SIZE];
 } message_t;
 
 void *multicast_listener(void *arg);

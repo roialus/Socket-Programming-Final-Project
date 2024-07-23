@@ -16,7 +16,7 @@
 #define MCDONALDS_PORT 5556     // TCP Port for McDonald's
 #define DOMINOS_PORT 5557       // TCP Port for Domino's
 #define TACO_BELL_PORT 5558     // TCP Port for Taco Bell
-#define BUFFER_SIZE 2048        // Buffer size for messages
+#define BUFFER_SIZE 512        // Buffer size for messages
 #define TOKEN_TIMEOUT 180       // 3 minutes
 #define RESTAURANT_TIMEOUT 180  // 3 minutes
 #define MAX_CLIENTS 3           // Maximum number of clients that can connect
@@ -31,12 +31,14 @@ typedef enum {
     MSG_ESTIMATED_TIME,
     MSG_RESTAURANT_OPTIONS,
     REST_UNAVALIABLE,
-    MSG_LEAVE
+    MSG_LEAVE,
+    MSG_TOKEN
 } message_type_t;
 
 typedef struct {
     message_type_t type;
     char data[BUFFER_SIZE];
+    char client_token[BUFFER_SIZE];
 } message_t;
 
 typedef struct {
@@ -140,6 +142,16 @@ int main() {
             if (clients[i].client_socket == 0) {    // Check if client slot is empty
                 clients[i].client_socket = client_socket;   // Assign client socket to client slot
                 strcpy(clients[i].token, generate_token()); // Generate token for client
+                message_t msg;
+                memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
+                msg.type = MSG_TOKEN;
+                strcpy(msg.data, clients[i].token);
+                ssize_t bytes_sent = send(clients[i].client_socket, &msg, sizeof(message_t), 0);
+                if (bytes_sent <= 0) {
+                    perror("send");
+                    close(clients[i].client_socket);
+                    pthread_exit(NULL);
+                }
                 clients[i].last_keep_alive = time(NULL);    // Set last keep-alive time to current time
                 break;
             }
@@ -158,6 +170,7 @@ int main() {
     close(welcome_socket);  // Close welcome socket
     return 0;
 }
+
 void *handle_client(void *arg) {
     client_info_t *client = (client_info_t *)arg;   // Cast argument to client_info_t pointer
     message_t msg;
@@ -167,7 +180,7 @@ void *handle_client(void *arg) {
 
     while (1) {
         // Receive message from client
-        ssize_t bytes_received = recv(client->client_socket, &msg, sizeof(message_t), 0);
+        ssize_t bytes_received = recv(client->client_socket, &msg, sizeof(message_t),0);
         if (bytes_received <= 0) {
             if (bytes_received == 0) {
                 printf("Client disconnected\n");
@@ -177,6 +190,17 @@ void *handle_client(void *arg) {
             break;
         }
         printf("Server received message type: %d\n", msg.type);
+        printf("this is the message data %s\n",msg.data);
+        printf("this is the message token received: %s\n", msg.client_token);
+        printf("this is the client token: %s \n", client->token);
+        if (strcmp(client->token, msg.client_token) == 0) {
+            printf("Authentication successful. Client's token: %s, socket: %d. Message holds token: %s\n", client->token, client->client_socket, msg.client_token);
+        } else {
+            printf("Authentication failed.\n");
+            printf("Client's token: %s, socket: %d. Message holds token: %s\n", client->token, client->client_socket, msg.client_token);
+            close(client->client_socket);
+            pthread_exit(NULL);
+        }
 
         switch (msg.type) {
             case MSG_KEEP_ALIVE:
@@ -367,6 +391,7 @@ void send_menu_to_client(client_info_t *client, const char *restaurant) {
     for (int i = 0; i < MAX_RESTAURANTS; i++) {
         if (strcmp(restaurants[i].name, restaurant) == 0) {
             strncpy(msg.data, restaurants[i].menu, BUFFER_SIZE);
+            strcpy(msg.client_token, client->token); // Include the client's token in the message
             break;
         }
     }
@@ -400,6 +425,7 @@ void send_order_to_restaurant(client_info_t *client, const char *order, const ch
         memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
         msg.type = MSG_ESTIMATED_TIME;
         snprintf(msg.data, BUFFER_SIZE, "Restaurant %s is not available.\n", restaurant);
+        strcpy(msg.client_token, client->token); // Include the client's token in the message
         ssize_t bytes_sent = send(client->client_socket, &msg, sizeof(message_t), 0);
         if (bytes_sent <= 0) {
             perror("send");
@@ -414,6 +440,7 @@ void send_order_to_restaurant(client_info_t *client, const char *order, const ch
     memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
     msg.type = MSG_ORDER;
     strncpy(msg.data, order, BUFFER_SIZE);
+    strcpy(msg.client_token, client->token); // Include the client's token in the message
     ssize_t bytes_sent = send(restaurant_socket, &msg, sizeof(message_t), 0);
     if (bytes_sent <= 0) {
         perror("send");
@@ -428,7 +455,7 @@ void send_estimated_time_to_client(int client_socket, const char *estimated_time
     memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
     msg.type = MSG_ESTIMATED_TIME;
     strncpy(msg.data, estimated_time, BUFFER_SIZE);
-
+    // strcpy(msg.client_token, client->token); // Include the client's token in the message
     ssize_t bytes_sent = send(client_socket, &msg, sizeof(message_t), 0);
     if (bytes_sent <= 0) {
         perror("send");

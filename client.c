@@ -9,7 +9,7 @@
 
 #define SERVER_IP "127.0.0.1"   // Server IP address
 #define SERVER_PORT 8080    // Server port
-#define BUFFER_SIZE 1024    // Buffer size for receiving data
+#define BUFFER_SIZE 512    // Buffer size for receiving data
 
 typedef enum {
     ERROR,
@@ -20,13 +20,17 @@ typedef enum {
     MSG_ESTIMATED_TIME,
     MSG_RESTAURANT_OPTIONS,
     REST_UNAVALIABLE,
-    MSG_LEAVE
+    MSG_LEAVE,
+    MSG_TOKEN
 } message_type_t;
 
 typedef struct {
     message_type_t type;
     char data[BUFFER_SIZE];
+    char client_token[BUFFER_SIZE];
 } message_t;
+
+char my_token[BUFFER_SIZE];
 
 void *server_communication(void *arg);
 void *keep_alive(void *arg);
@@ -83,10 +87,31 @@ void *server_communication(void *arg) {
     message_t msg;
     memset(&msg, 0, sizeof(message_t));  // Ensure message is zeroed out
 
+    // Receive token from server
+    ssize_t bytes_received = recv(sock, &msg, sizeof(message_t), 0);
+    if (bytes_received <= 0) {
+        perror("recv");
+        close(sock);
+        pthread_exit(NULL);
+    }
+
+    if (msg.type == MSG_TOKEN) {
+        strcpy(my_token, msg.data); // Correctly copy the token from msg.data to my_token
+        printf("Received token from server: %s\n", my_token);
+    } else {
+        perror("Expected token message");
+        close(sock);
+        pthread_exit(NULL);
+    }
+    printf("i got message type %d, i wanted token\n", msg.type);
+    printf("this is the data %s\n", msg.data);
+    printf("this is my token now: %s\n", my_token);
+
     while (1) {
         // Send a message to request the list of available restaurants
         msg.type = MSG_REQUEST_MENU;
         strcpy(msg.data, "REQUEST_MENU");
+        strcpy(msg.client_token, my_token); // Include the client's token in the message
         printf("Client requesting available restaurants\n");
         ssize_t bytes_sent = send(sock, &msg, sizeof(message_t), 0);
         if (bytes_sent <= 0) {
@@ -122,6 +147,7 @@ void *server_communication(void *arg) {
 
             msg.type = MSG_ORDER;
             sprintf(msg.data, "%d", choice);
+            strcpy(msg.client_token, my_token); // Include the client's token in the message
             bytes_sent = send(sock, &msg, sizeof(message_t), 0);
             if (bytes_sent <= 0) {
                 perror("send");
@@ -159,6 +185,7 @@ void *server_communication(void *arg) {
 
                 msg.type = MSG_ORDER;
                 sprintf(msg.data, "ORDER: %d", meal_choice);
+                strcpy(msg.client_token, my_token); // Include the client's token in the message
                 bytes_sent = send(sock, &msg, sizeof(message_t), 0);
                 if (bytes_sent <= 0) {
                     perror("send");
@@ -204,6 +231,7 @@ void *keep_alive(void *arg) {
     memset(&keep_alive_msg, 0, sizeof(message_t));  // Ensure message is zeroed out
     keep_alive_msg.type = MSG_KEEP_ALIVE;
     strcpy(keep_alive_msg.data, "KEEP_ALIVE");
+    strcpy(keep_alive_msg.client_token, my_token); // Include the client's token in the message
 
     while (1) { // Loop to send keep-alive messages
         sleep(30); // Send keep-alive message every 30 seconds

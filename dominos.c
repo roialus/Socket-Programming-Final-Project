@@ -12,7 +12,7 @@
 #define MULTICAST_PORT 5555         // Multicast port
 #define SERVER_IP "127.0.0.1"
 #define DOMINOS_PORT 5557           // Unicast TCP port for communication with server
-#define BUFFER_SIZE 1024            // Buffer size for receiving data
+#define BUFFER_SIZE 512             // Buffer size for receiving data (aligned with McDonald's)
 
 typedef enum {
     ERROR,
@@ -23,12 +23,14 @@ typedef enum {
     MSG_ESTIMATED_TIME,
     MSG_RESTAURANT_OPTIONS,
     REST_UNAVALIABLE,
-    MSG_LEAVE
+    MSG_LEAVE,
+    MSG_TOKEN
 } message_type_t;
 
 typedef struct {
     message_type_t type;
     char data[BUFFER_SIZE];
+    char client_token[BUFFER_SIZE];
 } message_t;
 
 void *multicast_listener(void *arg);
@@ -175,22 +177,6 @@ void *tcp_communication_handler(void *arg) {
     int tcp_socket = *(int *)arg;
     message_t msg;
 
-    // Register the restaurant with the server
-    message_t menu_msg;
-    menu_msg.type = MSG_MENU;
-    strcpy(menu_msg.data, "Dominos 1. Pepperoni Pizza - $8.99\n2. Cheese Pizza - $7.99\n3. BBQ Chicken Pizza - $9.99\n4. Veggie Pizza - $8.49\n5. Meat Lovers Pizza - $10.99\n6. Hawaiian Pizza - $9.49\n7. Supreme Pizza - $10.49\n8. Buffalo Chicken Pizza - $9.99\n9. Philly Cheese Steak Pizza - $10.99\n10. Deluxe Pizza - $9.99");
-
-    // Send initial menu to server
-    // pthread_mutex_lock(&tcp_mutex);
-    // ssize_t bytes_sent = send(tcp_socket, &menu_msg, sizeof(message_t), 0);
-    // if (bytes_sent <= 0) {
-    //     perror("send");
-    //     pthread_mutex_unlock(&tcp_mutex);
-    //     close(tcp_socket);
-    //     pthread_exit(NULL);
-    // }
-    // pthread_mutex_unlock(&tcp_mutex);
-
     while (1) {
         ssize_t bytes_received = recv(tcp_socket, &msg, sizeof(message_t), 0);
         if (bytes_received <= 0) {
@@ -229,11 +215,12 @@ void *tcp_communication_handler(void *arg) {
 
 void *keep_alive_handler(void *arg) {
     int tcp_socket = *(int *)arg;
+    message_t keep_alive_msg;
+    keep_alive_msg.type = MSG_KEEP_ALIVE;
+    strcpy(keep_alive_msg.data, "KEEP_ALIVE");
+
     while (1) {
         sleep(60); // Send keep-alive every 60 seconds
-        message_t keep_alive_msg;
-        keep_alive_msg.type = MSG_KEEP_ALIVE;
-        strcpy(keep_alive_msg.data, "KEEP_ALIVE");
         pthread_mutex_lock(&tcp_mutex);
         ssize_t bytes_sent = send(tcp_socket, &keep_alive_msg, sizeof(message_t), 0);
         if (bytes_sent <= 0) {
