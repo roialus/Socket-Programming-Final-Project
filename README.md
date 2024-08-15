@@ -36,3 +36,10 @@ gcc -o client client.c -pthread
 gcc -o mcdonalds mcdonalds.c -pthread
 gcc -o tacobell tacobell.c -pthread
 gcc -o dominos dominos.c -pthread
+
+## 🚧 Future Enhancements
+- 🍕 **Additional Restaurants**: Add more restaurants with unique menus and ordering processes.
+- 🖥️ **Graphical User Interface (GUI)**: Implement a GUI for the client to make it more user-friendly.
+- 🤖 **Enhanced Order Processing**: Improve the server's ability to handle more complex order processing, such as managing discounts, combos, and special requests.
+- 📊 **Analytics Module**: Create a module to track and analyze order data, providing insights into customer preferences and peak ordering times.
+- 📡 **Network Protocol Expansion**: Explore and implement additional network protocols to enhance communication between clients and the server.
