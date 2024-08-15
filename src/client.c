@@ -7,7 +7,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
-#define SERVER_IP "127.0.0.1"   // Server IP address
+#define SERVER_IP "192.15.6.1"   // Server IP address
 #define SERVER_PORT 8080    // Server port
 #define BUFFER_SIZE 512    // Buffer size for receiving data
 
