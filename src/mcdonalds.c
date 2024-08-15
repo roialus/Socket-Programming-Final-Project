@@ -10,7 +10,7 @@
 
 #define MULTICAST_GROUP "239.0.0.1" // Multicast group address
 #define MULTICAST_PORT 5555         // Multicast port
-#define SERVER_IP "127.0.0.1"
+#define SERVER_IP "192.15.6.1"
 #define MCDONALDS_PORT 5556         // Unicast TCP port for communication with server
 #define BUFFER_SIZE 512            // Buffer size for receiving data
 
