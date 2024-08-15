@@ -31,8 +31,8 @@ This project is a server-client simulation of a food pick-up service, implemente
 To compile the project, run the following commands:
 
 ```bash
-gcc -o server server.c -lpthread
-gcc -o client client.c
-gcc -o mcdonalds mcdonalds.c
-gcc -o tacobell tacobell.c
-gcc -o dominos dominos.c
+gcc -o server server.c -pthread
+gcc -o client client.c -pthread
+gcc -o mcdonalds mcdonalds.c -pthread
+gcc -o tacobell tacobell.c -pthread
+gcc -o dominos dominos.c -pthread
