@@ -196,10 +196,12 @@ void *handle_client(void *arg) {
         if (strcmp(client->token, msg.client_token) == 0) {
             printf("Authentication successful. Client's token: %s, socket: %d. Message holds token: %s\n", client->token, client->client_socket, msg.client_token);
         } else {
+            if (msg.type != MSG_KEEP_ALIVE){
             printf("Authentication failed.\n");
             printf("Client's token: %s, socket: %d. Message holds token: %s\n", client->token, client->client_socket, msg.client_token);
             close(client->client_socket);
             pthread_exit(NULL);
+            }
         }
 
         switch (msg.type) {
@@ -847,8 +849,8 @@ void *menu_update_manager(void *arg) {
         pthread_exit(NULL);
     }
 
-    int reuse = 1;
-    if (setsockopt(multicast_socket, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(reuse)) < 0) {
+    int ttl = 64;
+    if (setsockopt(multicast_socket, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0) {
         perror("Setting SO_REUSEADDR error");
         close(multicast_socket);
         pthread_exit(NULL);
