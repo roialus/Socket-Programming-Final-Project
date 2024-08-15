@@ -36,6 +36,7 @@ gcc -o client client.c -pthread
 gcc -o mcdonalds mcdonalds.c -pthread
 gcc -o tacobell tacobell.c -pthread
 gcc -o dominos dominos.c -pthread
+```
 
 ## 🚧 Future Enhancements
 - 🍕 **Additional Restaurants**: Add more restaurants with unique menus and ordering processes.
